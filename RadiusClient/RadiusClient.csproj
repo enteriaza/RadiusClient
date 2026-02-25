@@ -8,7 +8,7 @@
 		<AssemblyName>RadiusClient</AssemblyName>
 
 		<!-- Package metadata -->
-		<Description>A client library for communicating with RADIUS servers.</Description>
+		<Description>A .NET Core client library for communicating with RADIUS servers.</Description>
 		<Version>1.0.0</Version>
 		<Authors>Chris Knipe</Authors>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
