@@ -466,7 +466,7 @@ namespace Radius.Attributes
                     _ => rawData[pos]
                 };
                 VendorSpecificLength = (byte)(VendorSpecificLengthExtended & 0xFF);
-                pos += lengthFieldSize;
+                //pos += lengthFieldSize;
 
                 // Data length = vendor-length minus the sub-attribute header fields that
                 // are counted within the vendor-length.
@@ -488,11 +488,11 @@ namespace Radius.Attributes
             }
 
             // Read continuation flag (if present).
-            if (continuationFieldSize > 0)
-            {
-                ContinuationFlag = rawData[pos];
-                pos += continuationFieldSize;
-            }
+            //if (continuationFieldSize > 0)
+            //{
+            //    ContinuationFlag = rawData[pos];
+            //    pos += continuationFieldSize;
+            //}
 
             // Set outer attribute length and copy RawData.
             Length = (byte)(dataIndex + dataLength);
