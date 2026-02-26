@@ -101,6 +101,55 @@ var vsa = new VendorSpecificAttributes(
 request.SetAttribute(vsa);
 ```
 
+## Vendor-Specific Attribute (VSA) Format Support
+
+The `VendorSpecificAttributes` class supports all known VSA sub-attribute encoding formats used by RADIUS vendors, as specified in RFC 2865 §5.26, RFC 6929 §2.4, and real-world vendor dictionaries:
+
+| Format | Enum Value | Type Field | Length Field | Extra | Example Vendors |
+|---|---|---|---|---|---|
+| `format=1,1` | `Type1Len1` | 1 byte | 1 byte | — | Most vendors (Cisco, Juniper, HP, etc.) — **RFC 2865 §5.26 standard** |
+| `format=1,0` | `Type1Len0` | 1 byte | None | — | Vendors with type-only sub-attributes |
+| `format=2,1` | `Type2Len1` | 2 bytes | 1 byte | — | Vendors with extended type spaces |
+| `format=2,0` | `Type2Len0` | 2 bytes | None | — | Vendors with 2-byte type, no length |
+| `format=2,2` | `Type2Len2` | 2 bytes | 2 bytes | — | Vendors with 2-byte type and 2-byte length |
+| `format=4,0` | `Type4Len0` | 4 bytes | None | — | US Robotics / 3Com (PEN 429) |
+| `format=4,1` | `Type4Len1` | 4 bytes | 1 byte | — | Vendors with 4-byte type and 1-byte length |
+| `format=4,2` | `Type4Len2` | 4 bytes | 2 bytes | — | Vendors with 4-byte type and 2-byte length |
+| `format=1,1,c` | `Type1Len1Continuation` | 1 byte | 1 byte | Continuation byte | WiMAX Forum (PEN 24757) — **RFC 6929 §2.4** |
+
+### Standard VSA (format=1,1)
+
+```csharp
+// Most vendors use standard format — the byte constructor selects it   automatically.
+var vsa = new VendorSpecificAttributes(
+    vendorId: 9,           // Cisco
+    vendorSpecificType: 1, // AV-Pair
+    vendorSpecificData: Encoding.UTF8.GetBytes("shell:priv-lvl=15"));
+```
+
+### Extended 4-byte Type VSA (format=4,0)
+
+```csharp
+// US Robotics / 3Com uses 4-byte vendor types with no length field.
+var vsa = new VendorSpecificAttributes(
+    vendorId: 429,
+    vendorSpecificType: 0xBE45,
+    vendorSpecificData: Encoding.UTF8.GetBytes("+15551234567"),
+    format: VendorSpecificFormat.Type4Len0);
+```
+
+### WiMAX Continuation VSA (format=1,1,c)
+
+```csharp
+// WiMAX attributes include a continuation byte (RFC 6929 §2.4).
+var vsa = new VendorSpecificAttributes(
+    vendorId: 24757,
+    vendorSpecificType: 1,
+    vendorSpecificData: myData,
+    format: VendorSpecificFormat.Type1Len1Continuation,
+    continuationFlag: 0x00); // 0x80 = more fragments follow
+```
+
 ## API Overview
 
 ### Core Classes
@@ -161,4 +210,4 @@ public RadiusClient(
 
 ## License
 
-This project is licensed under the [MIT License](./LICENSE.txt).  
+This project is licensed under the [MIT License](./LICENSE.txt).

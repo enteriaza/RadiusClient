@@ -120,9 +120,17 @@
     /// Identifies the RADIUS attribute type as defined in RFC 2865 §5 (octet 1 of each attribute TLV).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Standard attributes are defined in RFC 2865 and RFC 2866. Extended attributes follow
     /// RFC 6929. Attributes marked <c>// ENUM</c> have a corresponding enum type in this file.
     /// Values are narrowed to <see cref="byte"/> via explicit cast when written to the wire.
+    /// </para>
+    /// <para>
+    /// The IANA RADIUS Types registry (https://www.iana.org/assignments/radius-types)
+    /// is the authoritative source for attribute type assignments. This enum covers
+    /// types 1–246, which are the standard and extended attribute spaces. Types 247–255
+    /// are reserved per RFC 6929 §10.
+    /// </para>
     /// </remarks>
     public enum RadiusAttributeType
     {
@@ -174,6 +182,8 @@
         /// <summary>Login-TCP-Port attribute (RFC 2865 §5.16). TCP port to connect the user to.</summary>
         LOGIN_TCP_PORT = 16,
 
+        // Type 17 is unassigned per IANA RADIUS Types registry.
+
         /// <summary>Reply-Message attribute (RFC 2865 §5.18). Text that may be displayed to the user.</summary>
         REPLY_MESSAGE = 18,
 
@@ -182,6 +192,8 @@
 
         /// <summary>Callback-Id attribute (RFC 2865 §5.20). Name of a callback location.</summary>
         CALLBACK_ID = 20,
+
+        // Type 21 is unassigned per IANA RADIUS Types registry.
 
         /// <summary>Framed-Route attribute (RFC 2865 §5.22). Routing information for the user's session.</summary>
         FRAMED_ROUTE = 22,
@@ -279,14 +291,16 @@
         /// <summary>Acct-Output-Gigawords attribute (RFC 2869 §5.2). How many times Acct-Output-Octets has wrapped around 2^32.</summary>
         ACCT_OUTPUT_GIGAWORDS = 53,
 
+        // Type 54 is unassigned per IANA RADIUS Types registry.
+
         /// <summary>Event-Timestamp attribute (RFC 2869 §5.3). Unix timestamp of when the session event occurred.</summary>
         EVENT_TIMESTAMP = 55,
 
         /// <summary>Egress-VLANID attribute (RFC 4675 §2.1). VLAN identifier for egress traffic.</summary>
         EGRESS_VLANID = 56,
 
-        /// <summary>Ingress-Filters attribute (RFC 4675 §2.2). Whether ingress filters are enabled on the port.</summary>
-        INGRESS_FILTERS = 57,
+        /// <summary>Ingress-Filters attribute (RFC 4675 §2.2). Whether ingress filters are enabled on the port. See <see cref="INGRESS_FILTERS_VALUE"/>.</summary>
+        INGRESS_FILTERS = 57,                       // ENUM
 
         /// <summary>Egress-VLAN-Name attribute (RFC 4675 §2.3). Name of the VLAN for egress traffic.</summary>
         EGRESS_VLAN_NAME = 58,
@@ -393,7 +407,9 @@
         /// <summary>NAS-Filter-Rule attribute (RFC 4849 §2). Packet filter rule to install on the NAS.</summary>
         NAS_FILTER_RULE = 92,
 
-        /// <summary>Originating-Line-Info attribute (NANP extension). ANI/II digits information.</summary>
+        // Type 93 is unassigned per IANA RADIUS Types registry.
+
+        /// <summary>Originating-Line-Info attribute (RFC 7155 §4.2.8, IANA). ANI/II digits information.</summary>
         ORIGINATING_LINE_INFO = 94,
 
         /// <summary>NAS-IPv6-Address attribute (RFC 3162 §2.1). IPv6 address of the NAS.</summary>
@@ -420,64 +436,64 @@
         /// <summary>EAP-Key-Name attribute (RFC 4072 §2.1). EAP session key name.</summary>
         EAP_KEY_NAME = 102,
 
-        /// <summary>Digest-Response attribute (RFC 5090 §3). HTTP Digest response value.</summary>
+        /// <summary>Digest-Response attribute (RFC 5090 §3.1). HTTP Digest response value.</summary>
         DIGEST_RESPONSE = 103,
 
-        /// <summary>Digest-Realm attribute (RFC 5090 §3). HTTP Digest realm.</summary>
+        /// <summary>Digest-Realm attribute (RFC 5090 §3.2). HTTP Digest realm.</summary>
         DIGEST_REALM = 104,
 
-        /// <summary>Digest-Nonce attribute (RFC 5090 §3). HTTP Digest nonce value.</summary>
+        /// <summary>Digest-Nonce attribute (RFC 5090 §3.3). HTTP Digest nonce value.</summary>
         DIGEST_NONCE = 105,
 
-        /// <summary>Digest-Response-Auth attribute (RFC 5090 §3). HTTP Digest response-auth.</summary>
+        /// <summary>Digest-Response-Auth attribute (RFC 5090 §3.4). HTTP Digest response-auth.</summary>
         DIGEST_RESPONSE_AUTH = 106,
 
-        /// <summary>Digest-Nextnonce attribute (RFC 5090 §3). HTTP Digest nextnonce value.</summary>
+        /// <summary>Digest-Nextnonce attribute (RFC 5090 §3.5). HTTP Digest nextnonce value.</summary>
         DIGEST_NEXTNONCE = 107,
 
-        /// <summary>Digest-Method attribute (RFC 5090 §3). HTTP method used in the Digest exchange.</summary>
+        /// <summary>Digest-Method attribute (RFC 5090 §3.6). HTTP method used in the Digest exchange.</summary>
         DIGEST_METHOD = 108,
 
-        /// <summary>Digest-URI attribute (RFC 5090 §3). HTTP Digest request URI.</summary>
+        /// <summary>Digest-URI attribute (RFC 5090 §3.7). HTTP Digest request URI.</summary>
         DIGEST_URI = 109,
 
-        /// <summary>Digest-Qop attribute (RFC 5090 §3). HTTP Digest quality-of-protection value.</summary>
+        /// <summary>Digest-Qop attribute (RFC 5090 §3.8). HTTP Digest quality-of-protection value.</summary>
         DIGEST_QOP = 110,
 
-        /// <summary>Digest-Algorithm attribute (RFC 5090 §3). Algorithm used in the HTTP Digest exchange.</summary>
+        /// <summary>Digest-Algorithm attribute (RFC 5090 §3.9). Algorithm used in the HTTP Digest exchange.</summary>
         DIGEST_ALGORITHM = 111,
 
-        /// <summary>Digest-Entity-Body-Hash attribute (RFC 5090 §3). Hash of the HTTP message body.</summary>
+        /// <summary>Digest-Entity-Body-Hash attribute (RFC 5090 §3.10). Hash of the HTTP message body.</summary>
         DIGEST_ENTITY_BODY_HASH = 112,
 
-        /// <summary>Digest-Cnonce attribute (RFC 5090 §3). HTTP Digest client nonce.</summary>
+        /// <summary>Digest-Cnonce attribute (RFC 5090 §3.11). HTTP Digest client nonce.</summary>
         DIGEST_CNONCE = 113,
 
-        /// <summary>Digest-Nonce-Count attribute (RFC 5090 §3). HTTP Digest nonce count.</summary>
+        /// <summary>Digest-Nonce-Count attribute (RFC 5090 §3.12). HTTP Digest nonce count.</summary>
         DIGEST_NONCE_COUNT = 114,
 
-        /// <summary>Digest-Username attribute (RFC 5090 §3). HTTP Digest username.</summary>
+        /// <summary>Digest-Username attribute (RFC 5090 §3.13). HTTP Digest username.</summary>
         DIGEST_USERNAME = 115,
 
-        /// <summary>Digest-Opaque attribute (RFC 5090 §3). HTTP Digest opaque value.</summary>
+        /// <summary>Digest-Opaque attribute (RFC 5090 §3.14). HTTP Digest opaque value.</summary>
         DIGEST_OPAQUE = 116,
 
-        /// <summary>Digest-Auth-Param attribute (RFC 5090 §3). Additional HTTP Digest parameters.</summary>
+        /// <summary>Digest-Auth-Param attribute (RFC 5090 §3.15). Additional HTTP Digest parameters.</summary>
         DIGEST_AUTH_PARAM = 117,
 
-        /// <summary>Digest-AKA-Auts attribute (RFC 5090 §3). AKA synchronisation token.</summary>
+        /// <summary>Digest-AKA-Auts attribute (RFC 5090 §3.16). AKA synchronisation token.</summary>
         DIGEST_AKA_AUTS = 118,
 
-        /// <summary>Digest-Domain attribute (RFC 5090 §3). HTTP Digest domain.</summary>
+        /// <summary>Digest-Domain attribute (RFC 5090 §3.17). HTTP Digest domain.</summary>
         DIGEST_DOMAIN = 119,
 
-        /// <summary>Digest-Stale attribute (RFC 5090 §3). HTTP Digest stale flag.</summary>
+        /// <summary>Digest-Stale attribute (RFC 5090 §3.18). HTTP Digest stale flag.</summary>
         DIGEST_STALE = 120,
 
-        /// <summary>Digest-HA1 attribute (RFC 5090 §3). Pre-computed HA1 hash for HTTP Digest.</summary>
+        /// <summary>Digest-HA1 attribute (RFC 5090 §3.19). Pre-computed HA1 hash for HTTP Digest.</summary>
         DIGEST_HA1 = 121,
 
-        /// <summary>SIP-AOR attribute (RFC 5090 §3). SIP Address of Record.</summary>
+        /// <summary>SIP-AOR attribute (RFC 5090 §3.20). SIP Address of Record.</summary>
         SIP_AOR = 122,
 
         /// <summary>Delegated-IPv6-Prefix attribute (RFC 4818 §3). IPv6 prefix delegated via DHCPv6-PD.</summary>
@@ -549,7 +565,7 @@
         /// <summary>Mobile-Node-Identifier attribute (RFC 6572 §6.1). Identifier of the mobile node.</summary>
         MOBILE_NODE_IDENTIFIER = 145,
 
-        /// <summary>Service-Selection attribute (RFC 5779 §6.1). APN or service name for the session.</summary>
+        /// <summary>Service-Selection attribute (RFC 5765 §3.1, RFC 5779 §6.1). APN or service name for the session.</summary>
         SERVICE_SELECTION = 146,
 
         /// <summary>PMIP6-Home-LMA-IPv6-Address attribute (RFC 6572 §6.2). IPv6 address of the home LMA.</summary>
@@ -603,86 +619,124 @@
         /// <summary>EAP-Lower-Layer attribute (RFC 7057 §4.1). Identifies the lower layer used with EAP. See <see cref="EAP_LOWER_LAYER"/>.</summary>
         EAP_LOWER_LAYER = 163,                      // ENUM
 
-        /// <summary>GSS-Acceptor-Service-Name attribute (RFC 7055 §2.1). GSS-API service name.</summary>
+        /// <summary>GSS-Acceptor-Service-Name attribute (RFC 7055 §3.1). GSS-API service name.</summary>
         GSS_ACCEPTOR_SERVICE_NAME = 164,
 
-        /// <summary>GSS-Acceptor-Host-Name attribute (RFC 7055 §2.2). GSS-API host name.</summary>
+        /// <summary>GSS-Acceptor-Host-Name attribute (RFC 7055 §3.2). GSS-API host name.</summary>
         GSS_ACCEPTOR_HOST_NAME = 165,
 
-        /// <summary>GSS-Acceptor-Service-Specifics attribute (RFC 7055 §2.3). GSS-API service-specific data.</summary>
+        /// <summary>GSS-Acceptor-Service-Specifics attribute (RFC 7055 §3.3). GSS-API service-specific data.</summary>
         GSS_ACCEPTOR_SERVICE_SPECIFICS = 166,
 
-        /// <summary>GSS-Acceptor-Realm-Name attribute (RFC 7055 §2.4). GSS-API Kerberos realm name.</summary>
+        /// <summary>GSS-Acceptor-Realm-Name attribute (RFC 7055 §3.4). GSS-API Kerberos realm name.</summary>
         GSS_ACCEPTOR_REALM_NAME = 167,
 
-        /// <summary>Framed-IPv6-Address attribute (RFC 6911 §2.1). IPv6 address to assign to the user.</summary>
+        /// <summary>Framed-IPv6-Address attribute (RFC 6911 §3.1). IPv6 address to assign to the user.</summary>
         FRAMED_IPV6_ADDRESS = 168,
 
-        /// <summary>DNS-Server-IPv6-Address attribute (RFC 6911 §2.2). IPv6 address of the DNS server.</summary>
+        /// <summary>DNS-Server-IPv6-Address attribute (RFC 6911 §3.2). IPv6 address of the DNS server.</summary>
         DNS_SERVER_IPV6_ADDRESS = 169,
 
-        /// <summary>Route-IPv6-Information attribute (RFC 6911 §2.3). IPv6 routing information for the user.</summary>
+        /// <summary>Route-IPv6-Information attribute (RFC 6911 §3.3). IPv6 routing information for the user.</summary>
         ROUTE_IPV6_INFORMATION = 170,
 
-        /// <summary>Delegated-IPv6-Prefix-Pool attribute (RFC 6911 §2.4). Name of a delegated IPv6 prefix pool.</summary>
+        /// <summary>Delegated-IPv6-Prefix-Pool attribute (RFC 6911 §3.4). Name of a delegated IPv6 prefix pool.</summary>
         DELEGATED_IPV6_PREFIX_POOL = 171,
 
-        /// <summary>Stateful-IPv6-Address-Pool attribute (RFC 6911 §2.5). Name of a stateful IPv6 address pool.</summary>
+        /// <summary>Stateful-IPv6-Address-Pool attribute (RFC 6911 §3.5). Name of a stateful IPv6 address pool.</summary>
         STATEFUL_IPV6_ADDRESS_POOL = 172,
 
         /// <summary>IPv6-6rd-Configuration attribute (RFC 6930 §3). 6rd tunnel configuration parameters.</summary>
         IPV6_6RD_CONFIGURATION = 173,
 
-        /// <summary>Allowed-Called-Station-Id attribute (RFC 7268 §2.1). Permitted called station identifiers.</summary>
+        /// <summary>Allowed-Called-Station-Id attribute (RFC 7268 §3.1). Permitted called station identifiers.</summary>
         ALLOWED_CALLED_STATION_ID = 174,
 
-        /// <summary>EAP-Peer-Id attribute (RFC 5247 §6.1). EAP peer identifier.</summary>
+        /// <summary>EAP-Peer-Id attribute (RFC 7268 §3.2). EAP peer identifier.</summary>
         EAP_PEER_ID = 175,
 
-        /// <summary>EAP-Server-Id attribute (RFC 5247 §6.2). EAP server identifier.</summary>
+        /// <summary>EAP-Server-Id attribute (RFC 7268 §3.3). EAP server identifier.</summary>
         EAP_SERVER_ID = 176,
 
-        /// <summary>Mobility-Domain-Id attribute (RFC 5247 §6.3). IEEE 802.11r mobility domain identifier.</summary>
+        /// <summary>Mobility-Domain-Id attribute (RFC 7268 §3.4). IEEE 802.11r mobility domain identifier.</summary>
         MOBILITY_DOMAIN_ID = 177,
 
-        /// <summary>Preauth-Timeout attribute (RFC 5247 §6.4). Timeout for IEEE 802.11r pre-authentication.</summary>
+        /// <summary>Preauth-Timeout attribute (RFC 7268 §3.5). Timeout for IEEE 802.11r pre-authentication.</summary>
         PREAUTH_TIMEOUT = 178,
 
-        /// <summary>Network-Id-Name attribute (RFC 5247 §6.5). Network identifier name.</summary>
+        /// <summary>Network-Id-Name attribute (RFC 7268 §3.6). Network identifier name.</summary>
         NETWORK_ID_NAME = 179,
 
-        /// <summary>EAPOL-Announcement attribute (RFC 5247 §6.6). EAPOL announcement data.</summary>
+        /// <summary>EAPoL-Announcement attribute (RFC 7268 §3.7). EAPoL announcement data.</summary>
         EAPOL_ANNOUNCEMENT = 180,
 
-        /// <summary>WLAN-HESSID attribute (RFC 5580 / WiMAX). Homogeneous ESS Identifier.</summary>
+        /// <summary>WLAN-HESSID attribute (RFC 7268 §3.8). Homogeneous ESS Identifier.</summary>
         WLAN_HESSID = 181,
 
-        /// <summary>WLAN-Venue-Info attribute (IEEE 802.11u). Venue type information.</summary>
+        /// <summary>WLAN-Venue-Info attribute (RFC 7268 §3.9). Venue type and group information.</summary>
         WLAN_VENUE_INFO = 182,
 
-        /// <summary>WLAN-Venue-Language attribute (IEEE 802.11u). Language code for venue name.</summary>
+        /// <summary>WLAN-Venue-Language attribute (RFC 7268 §3.10). Language code for venue name.</summary>
         WLAN_VENUE_LANGUAGE = 183,
 
-        /// <summary>WLAN-Venue-Name attribute (IEEE 802.11u). Human-readable venue name.</summary>
+        /// <summary>WLAN-Venue-Name attribute (RFC 7268 §3.11). Human-readable venue name.</summary>
         WLAN_VENUE_NAME = 184,
 
-        /// <summary>WLAN-Reason-Code attribute (IEEE 802.11). Reason code for WLAN deauthentication.</summary>
+        /// <summary>WLAN-Reason-Code attribute (RFC 7268 §3.12). IEEE 802.11 reason code for deauthentication/disassociation.</summary>
         WLAN_REASON_CODE = 185,
 
-        /// <summary>WLAN-Pairwise-Cipher attribute (IEEE 802.11i). Negotiated pairwise cipher suite.</summary>
+        /// <summary>WLAN-Pairwise-Cipher attribute (RFC 7268 §3.13). Negotiated pairwise cipher suite.</summary>
         WLAN_PAIRWISE_CIPHER = 186,
 
-        /// <summary>WLAN-Group-Cipher attribute (IEEE 802.11i). Negotiated group cipher suite.</summary>
+        /// <summary>WLAN-Group-Cipher attribute (RFC 7268 §3.14). Negotiated group cipher suite.</summary>
         WLAN_GROUP_CIPHER = 187,
 
-        /// <summary>WLAN-AKM-Suite attribute (IEEE 802.11i). Authentication and Key Management suite.</summary>
+        /// <summary>WLAN-AKM-Suite attribute (RFC 7268 §3.15). Authentication and Key Management suite.</summary>
         WLAN_AKM_SUITE = 188,
 
-        /// <summary>WLAN-Group-Mgmt-Cipher attribute (IEEE 802.11w). Group management frame cipher suite.</summary>
+        /// <summary>WLAN-Group-Mgmt-Cipher attribute (RFC 7268 §3.16). Group management frame cipher suite.</summary>
         WLAN_GROUP_MGMT_CIPHER = 189,
 
-        /// <summary>WLAN-RF-Band attribute. RF band in use (e.g., 2.4 GHz, 5 GHz).</summary>
-        WLAN_RF_BAND = 190
+        /// <summary>WLAN-RF-Band attribute (RFC 7268 §3.17). RF band in use (e.g., 2.4 GHz, 5 GHz).</summary>
+        WLAN_RF_BAND = 190,
+
+        // Types 191–240 are unassigned per IANA RADIUS Types registry.
+
+        /// <summary>
+        /// Extended-Type-1 attribute (RFC 6929 §3). Container for extended attributes in the
+        /// first extended type space. The first data byte is the Extended-Type code.
+        /// </summary>
+        EXTENDED_TYPE_1 = 241,
+
+        /// <summary>
+        /// Extended-Type-2 attribute (RFC 6929 §3). Container for extended attributes in the
+        /// second extended type space. The first data byte is the Extended-Type code.
+        /// </summary>
+        EXTENDED_TYPE_2 = 242,
+
+        /// <summary>
+        /// Extended-Type-3 attribute (RFC 6929 §3). Container for extended attributes in the
+        /// third extended type space. The first data byte is the Extended-Type code.
+        /// </summary>
+        EXTENDED_TYPE_3 = 243,
+
+        /// <summary>
+        /// Extended-Type-4 attribute (RFC 6929 §3). Container for extended attributes in the
+        /// fourth extended type space. The first data byte is the Extended-Type code.
+        /// </summary>
+        EXTENDED_TYPE_4 = 244,
+
+        /// <summary>
+        /// Long-Extended-Type-1 attribute (RFC 6929 §4). Container for long extended attributes
+        /// in the first long extended type space. Supports fragmentation via the More (M) bit.
+        /// </summary>
+        LONG_EXTENDED_TYPE_1 = 245,
+
+        /// <summary>
+        /// Long-Extended-Type-2 attribute (RFC 6929 §4). Container for long extended attributes
+        /// in the second long extended type space. Supports fragmentation via the More (M) bit.
+        /// </summary>
+        LONG_EXTENDED_TYPE_2 = 246
     }
 
     /// <summary>
@@ -840,7 +894,7 @@
         X25_PAD = 5,
 
         /// <summary>X.25 T3POS session.</summary>
-        X25_T3POS = 7,
+        X25_T3POS = 6,
 
         /// <summary>TCP clear with no output echo.</summary>
         TCP_CLEAR_QUIET = 8
@@ -880,22 +934,22 @@
         /// <summary>Accounting Off — the NAS is shutting down.</summary>
         ACCOUNTING_OFF = 8,
 
-        /// <summary>Tunnel Start — a tunnel has been established.</summary>
+        /// <summary>Tunnel Start — a tunnel has been established (RFC 2867 §3.1).</summary>
         TUNNEL_START = 9,
 
-        /// <summary>Tunnel Stop — a tunnel has been terminated.</summary>
+        /// <summary>Tunnel Stop — a tunnel has been terminated (RFC 2867 §3.2).</summary>
         TUNNEL_STOP = 10,
 
-        /// <summary>Tunnel Reject — a tunnel establishment request was rejected.</summary>
+        /// <summary>Tunnel Reject — a tunnel establishment request was rejected (RFC 2867 §3.3).</summary>
         TUNNEL_REJECT = 11,
 
-        /// <summary>Tunnel Link Start — a new link within a tunnel has started.</summary>
+        /// <summary>Tunnel Link Start — a new link within a tunnel has started (RFC 2867 §3.4).</summary>
         TUNNEL_LINK_START = 12,
 
-        /// <summary>Tunnel Link Stop — a link within a tunnel has been terminated.</summary>
+        /// <summary>Tunnel Link Stop — a link within a tunnel has been terminated (RFC 2867 §3.5).</summary>
         TUNNEL_LINK_STOP = 13,
 
-        /// <summary>Tunnel Link Reject — a new link within a tunnel was rejected.</summary>
+        /// <summary>Tunnel Link Reject — a new link within a tunnel was rejected (RFC 2867 §3.6).</summary>
         TUNNEL_LINK_REJECT = 14,
 
         /// <summary>Failed — the accounting start failed.</summary>
@@ -923,7 +977,7 @@
         /// <summary>Authenticated via a remote method.</summary>
         REMOTE = 3,
 
-        /// <summary>Authenticated via Diameter (RFC 3588).</summary>
+        /// <summary>Authenticated via Diameter (RFC 4005).</summary>
         DIAMETER = 4
     }
 
@@ -1273,6 +1327,19 @@
 
         /// <summary>Echo user input.</summary>
         ECHO = 1
+    }
+
+    /// <summary>
+    /// Defines the ingress filter setting, as used in the
+    /// Ingress-Filters attribute (RFC 4675 §2.2, <see cref="RadiusAttributeType.INGRESS_FILTERS"/>).
+    /// </summary>
+    public enum INGRESS_FILTERS_VALUE
+    {
+        /// <summary>Ingress filters are enabled on the port.</summary>
+        ENABLED = 1,
+
+        /// <summary>Ingress filters are disabled on the port.</summary>
+        DISABLED = 2
     }
 
     /// <summary>
