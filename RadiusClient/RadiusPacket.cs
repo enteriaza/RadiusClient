@@ -1,6 +1,5 @@
 ﻿using Radius.Attributes;
 using System.Security.Cryptography;
-using System.Text;
 
 namespace Radius
 {
@@ -177,7 +176,7 @@ namespace Radius
         /// </remarks>
         public List<RadiusAttributes> Attributes
         {
-            get { return new List<RadiusAttributes>(_Attributes); }
+            get { return [.. _Attributes]; }
         }
 
         /// <summary>
@@ -208,7 +207,7 @@ namespace Radius
         /// </remarks>
         /// <param name="packetType">The RADIUS packet code (RFC 2865 §3, octet 1).</param>
         public RadiusPacket(RadiusCode packetType)
-            : this(packetType, RandomNumberGenerator.GetBytes(1)[0])
+            : this(packetType, (byte)RandomNumberGenerator.GetInt32(0, 256))
         {
         }
 
@@ -236,8 +235,8 @@ namespace Radius
             RawData[RADIUS_IDENTIFIER_INDEX] = Identifier;
 
             // Write the initial packet length in big-endian order (RFC 2865 §3).
-            RawData[RADIUS_LENGTH_INDEX] = (byte)(RADIUS_HEADER_LENGTH >> 8);
-            RawData[RADIUS_LENGTH_INDEX + 1] = (byte)(RADIUS_HEADER_LENGTH & 0xFF);
+            RawData[RADIUS_LENGTH_INDEX] = RADIUS_HEADER_LENGTH >> 8;
+            RawData[RADIUS_LENGTH_INDEX + 1] = RADIUS_HEADER_LENGTH & 0xFF;
 
             Valid = true;
         }
@@ -266,44 +265,92 @@ namespace Radius
         /// Thrown when <paramref name="receivedData"/> is <see langword="null"/>.
         /// </exception>
         public RadiusPacket(byte[] receivedData)
+            : this((ReadOnlySpan<byte>)(receivedData ?? throw new ArgumentNullException(nameof(receivedData))))
         {
-            ArgumentNullException.ThrowIfNull(receivedData);
+        }
 
-            // Ensure RawData is always non-null, even on early validation failure.
-            RawData = receivedData;
+        /// <summary>
+        /// Parses a received RADIUS packet from a raw byte span, as defined in RFC 2865 §3.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This constructor copies the span contents into an internal <see cref="RawData"/>
+        /// array, trimmed to the declared RADIUS Length field (octets 3–4). This ensures
+        /// that trailing bytes beyond the RADIUS packet boundary (which RFC 2865 §3 permits
+        /// in the UDP payload) are excluded from <see cref="RawData"/>. Without this trim,
+        /// downstream cryptographic operations (authenticator verification, HMAC-MD5
+        /// computation) would hash the trailing garbage, producing incorrect results.
+        /// </para>
+        /// <para>
+        /// This allows callers (such as a receive loop reusing a shared buffer) to
+        /// avoid an intermediate allocation — the single copy happens here rather than at
+        /// the call site.
+        /// </para>
+        /// <para>
+        /// If the data fails any structural validation check, <see cref="Valid"/> is set
+        /// to <see langword="false"/> and the remaining fields are left in a default state.
+        /// No exception is thrown for malformed packets — callers must check <see cref="Valid"/>
+        /// before consuming any parsed fields.
+        /// </para>
+        /// <para>Validation checks performed:</para>
+        /// <list type="bullet">
+        ///   <item><description>Data length must be at least 20 bytes (RFC 2865 §3 minimum).</description></item>
+        ///   <item><description>The Length field in the packet header must be between 20 and 4096 bytes inclusive and must not exceed the span length.</description></item>
+        ///   <item><description>All attribute TLVs must be well-formed (see <see cref="ParseAttributes"/>).</description></item>
+        /// </list>
+        /// </remarks>
+        /// <param name="receivedData">
+        /// A read-only span over the raw UDP payload of the received RADIUS packet.
+        /// The contents are copied internally (trimmed to the declared RADIUS Length);
+        /// the caller may reuse or discard the underlying buffer after this constructor returns.
+        /// </param>
+        public RadiusPacket(ReadOnlySpan<byte> receivedData)
+        {
+            // Validate minimum size before reading the Length field.
+            if (receivedData.Length < MINIMUM_PACKET_LENGTH)
+            {
+                RawData = receivedData.ToArray();
+                Valid = false;
+                return;
+            }
+
+            // Read the big-endian RADIUS Length field (octets 3–4) before copying.
+            // RFC 2865 §3: "Octets outside the range of the Length field MUST be
+            // treated as padding and ignored on reception."
+            ushort declaredLength = (ushort)(receivedData[RADIUS_LENGTH_INDEX] << 8
+                                           | receivedData[RADIUS_LENGTH_INDEX + 1]);
+
+            // The declared length must be at least the header size, must not exceed
+            // the protocol maximum, and must not exceed the actual span.
+            if (declaredLength < MINIMUM_PACKET_LENGTH ||
+                declaredLength > MAXIMUM_PACKET_LENGTH ||
+                declaredLength > receivedData.Length)
+            {
+                RawData = receivedData.ToArray();
+                Valid = false;
+                return;
+            }
+
+            // Trim to the declared RADIUS length, discarding any trailing UDP padding.
+            // This is the single allocation point — callers passing a span from a
+            // reusable receive buffer avoid the double-copy that would occur if they
+            // called .ToArray() before invoking the byte[] constructor.
+            RawData = receivedData[..declaredLength].ToArray();
 
             try
             {
-                // RFC 2865 §3: minimum packet length is 20 bytes, maximum is 4096 bytes.
-                if (RawData.Length < MINIMUM_PACKET_LENGTH || RawData.Length > MAXIMUM_PACKET_LENGTH)
-                {
-                    Valid = false;
-                    return;
-                }
-
                 // Get the RADIUS Code (octet 1).
                 PacketType = (RadiusCode)RawData[RADIUS_CODE_INDEX];
 
                 // Get the RADIUS Identifier (octet 2).
                 Identifier = RawData[RADIUS_IDENTIFIER_INDEX];
 
-                // Get the big-endian RADIUS Length field (octets 3–4).
-                ushort length = (ushort)(RawData[RADIUS_LENGTH_INDEX] << 8 | RawData[RADIUS_LENGTH_INDEX + 1]);
-
-                // RFC 2865 §3: the Length field must be at least 20 and must not
-                // exceed the actual buffer size.
-                if (length < MINIMUM_PACKET_LENGTH || length > RawData.Length)
-                {
-                    Valid = false;
-                    return;
-                }
-
                 // Extract the 16-byte Authenticator field (octets 5–20).
                 RawData.AsSpan(RADIUS_AUTHENTICATOR_INDEX, RADIUS_AUTHENTICATOR_FIELD_LENGTH)
                        .CopyTo(_Authenticator);
 
                 // Parse attributes directly from the raw buffer — no intermediate allocation.
-                ParseAttributes(RawData.AsSpan(ATTRIBUTES_INDEX, length - ATTRIBUTES_INDEX));
+                ParseAttributes(RawData.AsSpan(ATTRIBUTES_INDEX, declaredLength - ATTRIBUTES_INDEX));
 
                 Valid = true;
             }
@@ -526,6 +573,79 @@ namespace Radius
         }
 
         /// <summary>
+        /// Appends a strongly typed RADIUS attribute to the packet using a
+        /// <see cref="RadiusAttributeDescriptor{T}"/> to enforce compile-time type safety.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This generic overload delegates to <see cref="SetAttribute(RadiusAttributes)"/>
+        /// after encoding the value via the descriptor. It provides the same wire-format
+        /// output and validation as the non-generic overload, but prevents passing the
+        /// wrong value type for an attribute at compile time.
+        /// </para>
+        /// <para>
+        /// <b>Example — compile-time safe attribute construction:</b>
+        /// </para>
+        /// <code>
+        /// // Compiler enforces 'string' for User-Name:
+        /// packet.SetAttribute(RadiusAttributeDescriptors.UserName, "alice@example.com");
+        ///
+        /// // Compiler enforces 'SERVICE_TYPE' enum for Service-Type:
+        /// packet.SetAttribute(RadiusAttributeDescriptors.ServiceType, SERVICE_TYPE.FRAMED);
+        ///
+        /// // Compiler enforces 'IPAddress' for NAS-IP-Address:
+        /// packet.SetAttribute(RadiusAttributeDescriptors.NasIpAddress, IPAddress.Loopback);
+        ///
+        /// // Compile-time error — wrong type:
+        /// // packet.SetAttribute(RadiusAttributeDescriptors.ServiceType, "hello");
+        /// </code>
+        /// <para>
+        /// For attributes with complex wire formats (tagged tunnel attributes,
+        /// vendor-specific attributes), use the existing specialised subclasses
+        /// (<see cref="TunnelTypeAttributes"/>, <see cref="TunnelMediumTypeAttributes"/>, 
+        /// <see cref="VendorSpecificAttributes"/>) with the non-generic
+        /// <see cref="SetAttribute(RadiusAttributes)"/> overload.
+        /// </para>
+        /// </remarks>
+        /// <typeparam name="T">
+        /// The CLR type enforced by the descriptor (inferred by the compiler from
+        /// <paramref name="descriptor"/>).
+        /// </typeparam>
+        /// <param name="descriptor">
+        /// A <see cref="RadiusAttributeDescriptor{T}"/> that identifies the attribute type
+        /// and provides the encoding logic. Use the pre-built instances from
+        /// <see cref="RadiusAttributeDescriptors"/> (e.g.
+        /// <see cref="RadiusAttributeDescriptors.UserName"/>).
+        /// Must not be <see langword="null"/>.
+        /// </param>
+        /// <param name="value">
+        /// The strongly typed value to encode into the attribute's wire format.
+        /// Must satisfy the constraints of the specific descriptor (e.g. non-null strings,
+        /// defined enum members, valid IP addresses).
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="descriptor"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when the encoded attribute has an invalid length.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="value"/> is not valid for the descriptor (e.g. an
+        /// undefined enum member for <see cref="EnumAttributeDescriptor{TEnum}"/>, or a
+        /// string that exceeds the 253-byte maximum when UTF-8 encoded).
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when appending the attribute would exceed the 4096-byte packet maximum
+        /// (RFC 2865 §3).
+        /// </exception>
+        public void SetAttribute<T>(RadiusAttributeDescriptor<T> descriptor, T value)
+        {
+            ArgumentNullException.ThrowIfNull(descriptor);
+
+            SetAttribute(descriptor.Encode(value));
+        }
+
+        /// <summary>
         /// Computes and appends a Message-Authenticator attribute (Type 80) to the packet,
         /// as defined in RFC 3579 §3.2.
         /// </summary>
@@ -591,7 +711,7 @@ namespace Radius
 
             // Write the Message-Authenticator TLV header (Type + Length).
             newRawData[attrOffset] = (byte)RadiusAttributeType.MESSAGE_AUTHENTICATOR;
-            newRawData[attrOffset + 1] = (byte)RADIUS_MESSAGE_AUTHENTICATOR_LENGTH;
+            newRawData[attrOffset + 1] = RADIUS_MESSAGE_AUTHENTICATOR_LENGTH;
 
             // Write the updated packet length in big-endian order (RFC 2865 §3).
             ushort totalLength = (ushort)newRawData.Length;

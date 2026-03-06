@@ -1,4 +1,6 @@
-﻿using System.Buffers.Binary;
+﻿using Radius;
+using System.Buffers.Binary;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Radius.Attributes
 {
@@ -92,6 +94,64 @@ namespace Radius.Attributes
     }
 
     /// <summary>
+    /// Provides well-known <see cref="VendorSpecificFormat"/> presets for common RADIUS
+    /// equipment vendors, removing the need for callers to look up the correct sub-attribute
+    /// encoding format for each Private Enterprise Number (PEN).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These values are derived from the FreeRADIUS dictionary files and the corresponding
+    /// vendor implementation documentation. They describe the Vendor-Type / Vendor-Length /
+    /// Continuation field layout used within the Vendor-Specific Attribute (Type 26) TLV
+    /// per RFC 2865 §5.26.
+    /// </para>
+    /// <para><b>Usage example:</b></para>
+    /// <code>
+    /// new VendorSpecificAttributes(
+    ///     vendorId: 429,
+    ///     vendorSpecificType: 0xBF08,
+    ///     data,
+    ///     RadiusVendorFormats.USRobotics);
+    /// </code>
+    /// </remarks>
+    public static class RadiusVendorFormats
+    {
+        /// <summary>Cisco Systems (PEN 9) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Cisco = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>Microsoft (PEN 311) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Microsoft = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>Juniper Networks (PEN 2636) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Juniper = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>Hewlett-Packard / Aruba Networks (PEN 14823) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Aruba = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>Huawei (PEN 2011) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Huawei = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>Ruckus Wireless (PEN 25053) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Ruckus = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>Fortinet (PEN 12356) — standard format: 1-byte type, 1-byte length.</summary>
+        public const VendorSpecificFormat Fortinet = VendorSpecificFormat.Type1Len1;
+
+        /// <summary>
+        /// US Robotics / 3Com (PEN 429) — extended format: 4-byte type, no length field.
+        /// <para>FreeRADIUS dictionary notation: <c>format=4,0</c></para>
+        /// </summary>
+        public const VendorSpecificFormat USRobotics = VendorSpecificFormat.Type4Len0;
+
+        /// <summary>
+        /// WiMAX Forum (PEN 24757) — continuation format: 1-byte type, 1-byte length,
+        /// 1-byte continuation flag (RFC 6929 §2.4).
+        /// <para>FreeRADIUS dictionary notation: <c>format=1,1,c</c></para>
+        /// </summary>
+        public const VendorSpecificFormat WiMAX = VendorSpecificFormat.Type1Len1Continuation;
+    }
+
+    /// <summary>
     /// Represents a RADIUS Vendor-Specific Attribute (VSA), as defined in RFC 2865 §5.26.
     /// </summary>
     /// <remarks>
@@ -120,6 +180,10 @@ namespace Radius.Attributes
     ///   <item><description><b>format=4,2</b>: 4-byte type, 2-byte length.</description></item>
     ///   <item><description><b>format=1,1,c</b> (RFC 6929 §2.4): 1-byte type, 1-byte length, 1-byte continuation flag (WiMAX).</description></item>
     /// </list>
+    /// <para>
+    /// For common vendors, use the preset constants in <see cref="RadiusVendorFormats"/> to
+    /// avoid looking up the correct format manually.
+    /// </para>
     /// </remarks>
     public sealed class VendorSpecificAttributes : RadiusAttributes
     {
@@ -200,7 +264,9 @@ namespace Radius.Attributes
         /// </param>
         /// <param name="vendorSpecificData">
         /// The raw value bytes of the vendor sub-attribute. Must not be <see langword="null"/>.
-        /// The maximum length is <c>247</c> bytes (255 − 8 bytes of VSA header overhead).
+        /// The maximum length depends on the encoding format; for the standard
+        /// <see cref="VendorSpecificFormat.Type1Len1"/> format used by this overload, the
+        /// maximum is <c>247</c> bytes (255 − 8 bytes of outer VSA and sub-attribute header overhead).
         /// </param>
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="vendorSpecificData"/> is <see langword="null"/>.
@@ -225,6 +291,8 @@ namespace Radius.Attributes
         /// </param>
         /// <param name="vendorSpecificData">
         /// The raw value bytes of the vendor sub-attribute. Must not be <see langword="null"/>.
+        /// The maximum length depends on the chosen <paramref name="format"/>
+        /// (255 bytes minus the outer VSA header and format-specific sub-attribute header overhead).
         /// </param>
         /// <param name="format">
         /// The sub-attribute encoding format to use on the wire.
@@ -261,6 +329,8 @@ namespace Radius.Attributes
         /// </param>
         /// <param name="vendorSpecificData">
         /// The raw value bytes of the vendor sub-attribute. Must not be <see langword="null"/>.
+        /// The maximum length depends on the chosen <paramref name="format"/>
+        /// (255 bytes minus the outer VSA header and format-specific sub-attribute header overhead).
         /// </param>
         /// <param name="format">
         /// The sub-attribute encoding format to use on the wire.
@@ -289,12 +359,11 @@ namespace Radius.Attributes
             VendorId = vendorId;
             VendorSpecificTypeExtended = vendorSpecificType;
 
-            // Compute per-format field sizes.
+            // Compute per-format field sizes via the shared helper.
+            int dataIndex = ComputeDataIndex(format);
             int typeFieldSize = GetTypeFieldSize(format);
             int lengthFieldSize = GetLengthFieldSize(format);
             int continuationFieldSize = format == VendorSpecificFormat.Type1Len1Continuation ? 1 : 0;
-            int subHeaderSize = typeFieldSize + lengthFieldSize + continuationFieldSize;
-            int dataIndex = VSA_SUBATTR_INDEX + subHeaderSize;
             int maxDataLength = 255 - dataIndex;
 
             if (vendorSpecificData.Length > maxDataLength)
@@ -397,6 +466,18 @@ namespace Radius.Attributes
         /// Parses a Vendor-Specific Attribute from a raw packet buffer at the specified offset,
         /// using the specified sub-attribute encoding format.
         /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The parsed attribute is stored as a self-contained copy in <see cref="RadiusAttributes.RawData"/>.
+        /// The caller's buffer is not retained.
+        /// </para>
+        /// <para>
+        /// For <see cref="VendorSpecificFormat.Type1Len1Continuation"/> format VSAs, the
+        /// continuation flag byte (RFC 6929 §2.4) is read and exposed via
+        /// <see cref="ContinuationFlag"/>. The high bit (<c>0x80</c>) indicates whether
+        /// additional fragments follow.
+        /// </para>
+        /// </remarks>
         /// <param name="rawData">
         /// The raw byte buffer containing the VSA TLV. Must not be <see langword="null"/>.
         /// </param>
@@ -428,11 +509,12 @@ namespace Radius.Attributes
 
             Format = format;
 
+            // Compute per-format field sizes via the shared helper.
+            int dataIndex = ComputeDataIndex(format);
             int typeFieldSize = GetTypeFieldSize(format);
             int lengthFieldSize = GetLengthFieldSize(format);
             int continuationFieldSize = format == VendorSpecificFormat.Type1Len1Continuation ? 1 : 0;
             int subHeaderSize = typeFieldSize + lengthFieldSize + continuationFieldSize;
-            int dataIndex = VSA_SUBATTR_INDEX + subHeaderSize;
 
             if (rawData.Length < offset + dataIndex)
                 throw new ArgumentOutOfRangeException(nameof(rawData),
@@ -466,7 +548,7 @@ namespace Radius.Attributes
                     _ => rawData[pos]
                 };
                 VendorSpecificLength = (byte)(VendorSpecificLengthExtended & 0xFF);
-                //pos += lengthFieldSize;
+                pos += lengthFieldSize;
 
                 // Data length = vendor-length minus the sub-attribute header fields that
                 // are counted within the vendor-length.
@@ -480,19 +562,28 @@ namespace Radius.Attributes
             {
                 // No length field — infer data length from the outer RADIUS Length field.
                 byte outerLength = rawData[offset + 1];
+
+                if (outerLength < dataIndex)
+                    throw new ArgumentOutOfRangeException(nameof(rawData),
+                        $"Outer Length field value {outerLength} is less than the minimum " +
+                        $"sub-attribute header size ({dataIndex}) for {format} at offset {offset}.");
+
                 dataLength = outerLength - dataIndex;
-                if (dataLength < 0 || rawData.Length < offset + outerLength)
+                if (rawData.Length < offset + outerLength)
                     throw new ArgumentOutOfRangeException(nameof(rawData),
                         $"Outer Length field value {outerLength} is inconsistent " +
                         $"with the available buffer data at offset {offset}.");
             }
 
             // Read continuation flag (if present).
-            //if (continuationFieldSize > 0)
-            //{
-            //    ContinuationFlag = rawData[pos];
-            //    pos += continuationFieldSize;
-            //}
+            // For Type1Len1Continuation (RFC 6929 §2.4), the continuation byte sits
+            // between the Vendor-Length and Vendor-Data fields. The high bit (0x80)
+            // indicates whether additional fragments follow.
+            if (continuationFieldSize > 0)
+            {
+                ContinuationFlag = rawData[pos];
+                pos += continuationFieldSize;
+            }
 
             // Set outer attribute length and copy RawData.
             Length = (byte)(dataIndex + dataLength);
@@ -505,6 +596,33 @@ namespace Radius.Attributes
         #endregion
 
         #region Private Helpers
+
+        /// <summary>
+        /// Computes the byte offset within the outer VSA TLV at which the Vendor-Data
+        /// payload begins, for the given sub-attribute encoding format.
+        /// </summary>
+        /// <remarks>
+        /// The data index is:
+        /// <c><see cref="VSA_SUBATTR_INDEX"/> + TypeFieldSize + LengthFieldSize + ContinuationFieldSize</c>.
+        /// This is the single source of truth consumed by both the outbound and parsing
+        /// constructors, ensuring the <see cref="RadiusAttributes.Data"/> slice always aligns with the wire
+        /// layout regardless of which constructor path was taken.
+        /// </remarks>
+        /// <param name="format">
+        /// The sub-attribute encoding format. Must be a defined member of
+        /// <see cref="VendorSpecificFormat"/>.
+        /// </param>
+        /// <returns>
+        /// The zero-based byte offset of the Vendor-Data payload within the outer VSA TLV.
+        /// </returns>
+        private static int ComputeDataIndex(VendorSpecificFormat format)
+        {
+            int typeFieldSize = GetTypeFieldSize(format);
+            int lengthFieldSize = GetLengthFieldSize(format);
+            int continuationFieldSize = format == VendorSpecificFormat.Type1Len1Continuation ? 1 : 0;
+
+            return VSA_SUBATTR_INDEX + typeFieldSize + lengthFieldSize + continuationFieldSize;
+        }
 
         /// <summary>
         /// Returns the Vendor-Type field size in bytes for the given format.

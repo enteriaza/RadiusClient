@@ -10,7 +10,8 @@ A high-performance, thread-safe .NET 8 client library for communicating with RAD
 - **IPv4 and IPv6** — Dual-stack support with automatic address family detection
 - **Async/await** — Fully asynchronous send/receive with `CancellationToken` support
 - **Configurable retries** — Per-request retry count and socket timeout
-- **Comprehensive attribute support** — Standard attributes, Vendor-Specific Attributes (VSA), Tunnel attributes, and more
+- **Comprehensive attribute support** — Standard attributes, Vendor-Specific Attributes (VSA) with 9 encoding formats, Tunnel attributes, and more
+- **Vendor format presets** — Built-in `RadiusVendorFormats` constants for Cisco, Microsoft, Juniper, Aruba, Huawei, Ruckus, Fortinet, US Robotics, and WiMAX
 - **Authentication protocols** — PAP, CHAP, and EAP (Message-Authenticator) support
 - **Security** — Sensitive key material is zeroed after use via `CryptographicOperations.ZeroMemory`; constant-time authenticator comparison prevents timing side-channel attacks
 - **Trimming and AOT compatible** — Annotated for .NET trimming and Native AOT scenarios
@@ -18,7 +19,7 @@ A high-performance, thread-safe .NET 8 client library for communicating with RAD
 ## Installation
 
 Clone the repository and add a project reference:
-    
+
 ```bash
 git clone https://github.com/enteriaza/RadiusClient.git
 ```

@@ -1,5 +1,7 @@
-﻿using System.Net;
+﻿using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -36,16 +38,19 @@ namespace Radius
     /// <para>
     /// <b>Thread safety:</b> All public members of this class are thread-safe.
     /// <see cref="SendAndReceivePacketAsync"/> may be called concurrently from multiple
-    /// threads; each call uses the shared pre-connected UDP socket(s) and correlates
-    /// responses by RADIUS Identifier (RFC 2865 §3). The <see cref="SocketTimeout"/>
-    /// property uses <see cref="Volatile"/> reads and writes for safe cross-thread visibility.
+    /// threads; each call uses the shared pre-connected UDP socket and correlates
+    /// responses by RADIUS Identifier (RFC 2865 §3) via an internal demultiplexer loop.
+    /// The <see cref="SocketTimeout"/> property uses <see cref="Volatile"/> reads and writes
+    /// for safe cross-thread visibility.
     /// </para>
     /// <para>
     /// <b>High throughput:</b> Unlike a naive implementation that creates a new
     /// <see cref="UdpClient"/> per request, this class maintains one pre-connected
-    /// <see cref="Socket"/> per address family (IPv4/IPv6) for the lifetime of the instance.
+    /// <see cref="Socket"/> for the lifetime of the instance and a single background
+    /// receive loop that demultiplexes responses to their corresponding callers.
     /// This eliminates per-request socket creation overhead, ephemeral port exhaustion,
-    /// and <c>TIME_WAIT</c> socket accumulation under high load.
+    /// <c>TIME_WAIT</c> socket accumulation under high load, and cross-caller datagram
+    /// theft that occurs when multiple <c>ReceiveFromAsync</c> calls compete on the same socket.
     /// </para>
     /// <para>
     /// <b>IPv4 and IPv6</b> are both supported. The address family is resolved from
@@ -53,10 +58,6 @@ namespace Radius
     /// selected at random using <see cref="Random.Shared"/>.
     /// </para>
     /// </remarks>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage(
-        "Design",
-        "DE00012:Types that own disposable fields should be disposable",
-        Justification = "RadiusClient implements IDisposable and disposes _socket in Dispose(bool).")]
     public sealed class RadiusClient : IDisposable
     {
         #region Constants
@@ -82,9 +83,29 @@ namespace Radius
         /// <summary>Byte offset of the Identifier field in the RADIUS packet header (RFC 2865 §3).</summary>
         private const int IDENTIFIER_OFFSET = 1;
 
+        /// <summary>
+        /// Default OS-level socket receive buffer size in bytes.
+        /// Set to 1 MiB to reduce kernel-side packet drops under burst load.
+        /// Linux defaults (~212 KB) can cause silent drops at high RPS.
+        /// </summary>
+        private const int DEFAULT_RECEIVE_BUFFER_SIZE = 1 << 20;
+
+        /// <summary>
+        /// Default OS-level socket send buffer size in bytes (1 MiB).
+        /// </summary>
+        private const int DEFAULT_SEND_BUFFER_SIZE = 1 << 20;
+
         #endregion
 
         #region Private
+
+        /// <summary>
+        /// Strict ASCII encoding that rejects non-ASCII characters with an exception
+        /// rather than silently substituting '?'. Used to encode the shared secret,
+        /// ensuring fail-fast behaviour for secrets containing non-ASCII code points.
+        /// </summary>
+        private static readonly Encoding StrictAscii =
+            Encoding.GetEncoding("us-ascii", EncoderFallback.ExceptionFallback, DecoderFallback.ReplacementFallback);
 
         /// <summary>The shared secret for authenticator computation (RFC 2865 §3).</summary>
         private readonly byte[] _secret;
@@ -114,8 +135,31 @@ namespace Radius
         /// <summary>Tracks whether <see cref="Dispose()"/> has been called.</summary>
         private int _disposed;
 
-        private static readonly Encoding StrictAscii =
-    Encoding.GetEncoding("us-ascii", EncoderFallback.ExceptionFallback, DecoderFallback.ReplacementFallback);
+        /// <summary>
+        /// Pending response demultiplexer keyed by RADIUS Identifier (0–255).
+        /// Each entry holds a <see cref="TaskCompletionSource{TResult}"/> that the
+        /// background receive loop completes when a matching response arrives.
+        /// The receive loop uses a peek-then-remove strategy: it first checks for a
+        /// pending entry via <see cref="ConcurrentDictionary{TKey,TValue}.TryGetValue"/>,
+        /// validates the packet structurally, and only then atomically removes the entry
+        /// via <see cref="ConcurrentDictionary{TKey,TValue}.TryRemove(TKey, out TValue)"/> before completing
+        /// the TCS. This prevents malformed packets from ejecting pending requests.
+        /// </summary>
+        private readonly ConcurrentDictionary<byte, TaskCompletionSource<RadiusPacket>> _pendingRequests = new();
+
+        /// <summary>
+        /// Cancellation source for the background receive loop.
+        /// Cancelled during <see cref="Dispose(bool)"/> to terminate the loop.
+        /// </summary>
+        private readonly CancellationTokenSource _receiveCts = new();
+
+        /// <summary>
+        /// The background receive loop task. Started lazily on first send via
+        /// <see cref="Interlocked.CompareExchange{T}(ref T, T, T)"/> and runs until
+        /// disposal. A single loop avoids the race condition where multiple concurrent
+        /// <c>ReceiveFromAsync</c> calls steal each other's datagrams.
+        /// </summary>
+        private Task? _receiveLoopTask;
 
         #endregion
 
@@ -258,6 +302,10 @@ namespace Radius
                     nameof(acctPort), acctPort,
                     "Accounting port must be in the range [1, 65535].");
 
+            // StrictAscii encoding deliberately rejects non-ASCII characters rather than
+            // silently substituting '?'. While RFC 2865 §3 defines the shared secret as
+            // an "octet string", virtually all RADIUS deployments use printable ASCII.
+            // Fail-fast here prevents subtle authenticator mismatches at runtime.
             _secret = StrictAscii.GetBytes(sharedSecret);
             _timeout = sockTimeout;
 
@@ -289,6 +337,22 @@ namespace Radius
 
             try
             {
+                // On Windows, sending UDP to a closed port causes an ICMP Port Unreachable
+                // message that triggers WSAECONNRESET on the next ReceiveFrom. This IOControl
+                // disables that behaviour, preventing spurious SocketExceptions in the
+                // receive loop. Safe to call on all platforms (no-op on non-Windows).
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    const int SIO_UDP_CONNRESET = unchecked((int)0x9800000C);
+                    _socket.IOControl(SIO_UDP_CONNRESET, [0], null);
+                }
+
+                // Increase OS-level socket buffers to reduce kernel-side packet drops
+                // under burst load. Linux defaults (~212 KB) are often insufficient for
+                // high-RPS RADIUS traffic.
+                _socket.ReceiveBufferSize = DEFAULT_RECEIVE_BUFFER_SIZE;
+                _socket.SendBufferSize = DEFAULT_SEND_BUFFER_SIZE;
+
                 if (localEndPoint is not null)
                 {
                     if (localEndPoint.AddressFamily != resolved.AddressFamily)
@@ -309,6 +373,142 @@ namespace Radius
             {
                 _socket.Dispose();
                 throw;
+            }
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        /// <summary>
+        /// Ensures the background receive loop is running. Called once before the first send.
+        /// Uses <see cref="Interlocked.CompareExchange{T}(ref T, T, T)"/> to guarantee
+        /// exactly-once start semantics without a lock object.
+        /// </summary>
+        private void EnsureReceiveLoopStarted()
+        {
+            if (Volatile.Read(ref _receiveLoopTask) is not null)
+                return;
+
+            // Create the task eagerly, then atomically publish it. If another thread
+            // wins the race, the duplicate task is never observed — Task.Run hasn't
+            // been called yet because we create the Task via CompareExchange.
+            Task newTask = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
+            Interlocked.CompareExchange(ref _receiveLoopTask, newTask, null);
+        }
+
+        /// <summary>
+        /// Background receive loop that reads datagrams from the shared socket and
+        /// demultiplexes them to pending callers by RADIUS Identifier.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A single receive loop eliminates the race condition where multiple concurrent
+        /// <c>ReceiveFromAsync</c> calls compete for datagrams on the same socket. The
+        /// kernel delivers each datagram to exactly one <c>ReceiveFromAsync</c> call;
+        /// without a demultiplexer, Thread B can receive Thread A's response and discard
+        /// it due to Identifier mismatch, causing Thread A to time out.
+        /// </para>
+        /// <para>
+        /// The loop uses a peek-then-remove strategy: it first checks for a pending
+        /// request via <see cref="ConcurrentDictionary{TKey,TValue}.TryGetValue"/>,
+        /// then validates the packet structurally, and only then atomically removes
+        /// the entry via <see cref="ConcurrentDictionary{TKey,TValue}.TryRemove(TKey, out TValue)"/>
+        /// before completing the <see cref="TaskCompletionSource{TResult}"/>. This
+        /// ensures that a malformed packet with a matching Identifier byte does not
+        /// eject the pending request and orphan the caller.
+        /// </para>
+        /// <para>
+        /// This loop runs until the <paramref name="cancellationToken"/> is cancelled
+        /// (during disposal). All non-cancellation exceptions are swallowed to prevent
+        /// the loop from terminating on transient socket errors.
+        /// </para>
+        /// </remarks>
+        private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
+        {
+            byte[] receiveBuffer = GC.AllocateUninitializedArray<byte>(MAX_PACKET_SIZE);
+
+            // Use a wildcard endpoint as the ReceiveFromAsync source address placeholder.
+            // ReceiveFromAsync overwrites this with the actual sender address on each call.
+            // Using a throwaway endpoint (rather than _authEndPoint) avoids semantic confusion
+            // and prevents accidental mutation of the real endpoint reference.
+            EndPoint remoteEndPoint = new IPEndPoint(
+                _remoteAddress.AddressFamily == AddressFamily.InterNetwork
+                    ? IPAddress.Any
+                    : IPAddress.IPv6Any,
+                0);
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    SocketReceiveFromResult result = await _socket.ReceiveFromAsync(
+                        receiveBuffer,
+                        SocketFlags.None,
+                        remoteEndPoint,
+                        cancellationToken).ConfigureAwait(false);
+
+                    // Validate source endpoint — only accept datagrams from the server.
+                    if (result.RemoteEndPoint is not IPEndPoint source ||
+                        !source.Address.Equals(_remoteAddress) ||
+                        source.Port != _authEndPoint.Port && source.Port != _acctEndPoint.Port)
+                    {
+                        continue;
+                    }
+
+                    // Quick Identifier extraction on the raw buffer before constructing
+                    // a RadiusPacket — avoids parsing overhead for unmatched responses.
+                    if (result.ReceivedBytes < 20)
+                        continue;
+
+                    byte identifier = receiveBuffer[IDENTIFIER_OFFSET];
+
+                    // Peek first: check whether anyone is waiting for this Identifier
+                    // without removing the entry. This ensures that structurally invalid
+                    // packets (which pass the raw Identifier check but fail full parsing)
+                    // do not eject the pending request and orphan the caller.
+                    if (!_pendingRequests.TryGetValue(identifier, out TaskCompletionSource<RadiusPacket>? tcs))
+                        continue;
+
+                    // Construct a RadiusPacket directly from the receive buffer span.
+                    // The span constructor copies exactly the received bytes into a
+                    // right-sized internal array, avoiding the intermediate .ToArray()
+                    // allocation that the byte[] constructor would require at the call site.
+                    RadiusPacket receivedPacket = new(
+                        receiveBuffer.AsSpan(0, result.ReceivedBytes));
+
+                    // Validate the parsed packet before removing the pending entry.
+                    // If validation fails, the entry remains in the dictionary so the
+                    // caller can still receive a valid response on a subsequent datagram.
+                    if (!receivedPacket.Valid)
+                        continue;
+
+                    // Atomically remove the pending request and complete the caller's task.
+                    // TryRemove guards against a narrow race where two valid responses for
+                    // the same Identifier arrive back-to-back: only the first removal wins
+                    // and delivers the result; the second is silently discarded.
+                    if (_pendingRequests.TryRemove(identifier, out tcs))
+                    {
+                        // RunContinuationsAsynchronously (set at TCS creation) prevents the
+                        // caller's continuation from hijacking this receive loop thread.
+                        tcs.TrySetResult(receivedPacket);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Disposal requested — exit the loop cleanly.
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Socket disposed during shutdown — exit the loop cleanly.
+                    break;
+                }
+                catch (SocketException)
+                {
+                    // Transient socket error (e.g. ICMP port unreachable on platforms
+                    // where SIO_UDP_CONNRESET is not available). Continue receiving.
+                }
             }
         }
 
@@ -374,10 +574,16 @@ namespace Radius
         /// (<c>1812</c> by default).
         /// </para>
         /// <para>
-        /// Responses are correlated by RADIUS Identifier (RFC 2865 §3, octet 2).
-        /// Only a response whose Identifier matches the sent packet is accepted.
-        /// Unmatched datagrams are silently discarded. This allows multiple concurrent
-        /// calls to share the same underlying socket without cross-contamination.
+        /// Responses are demultiplexed by RADIUS Identifier (RFC 2865 §3, octet 2) via a
+        /// single background receive loop. This ensures that concurrent callers never steal
+        /// each other's responses, which would occur if multiple <c>ReceiveFromAsync</c> calls
+        /// competed on the same socket.
+        /// </para>
+        /// <para>
+        /// A single <see cref="TaskCompletionSource{TResult}"/> is used across all retry
+        /// attempts for a given request. This eliminates the race condition where a response
+        /// arrives between the timeout firing and a replacement TCS being registered —
+        /// the same pattern used by DNS retransmission implementations.
         /// </para>
         /// <para>
         /// A response packet is accepted only if it passes structural validation
@@ -387,11 +593,19 @@ namespace Radius
         /// its contents.
         /// </para>
         /// <para>
-        /// Each attempt uses a <see cref="CancellationTokenSource"/> linked to both the
-        /// caller's <paramref name="cancellationToken"/> and the configured
-        /// <see cref="SocketTimeout"/>, ensuring the receive never hangs indefinitely
-        /// regardless of platform (Linux does not honour
-        /// <see cref="SocketOptionName.ReceiveTimeout"/> on async operations).
+        /// Each attempt uses a per-attempt timeout derived from <see cref="SocketTimeout"/>,
+        /// linked to the caller's <paramref name="cancellationToken"/>, ensuring the receive
+        /// never hangs indefinitely regardless of platform.
+        /// </para>
+        /// <para>
+        /// <b>Identifier uniqueness:</b> The RADIUS Identifier is an 8-bit field, limiting
+        /// the number of concurrent in-flight requests to 256 (RFC 2865 §3). The
+        /// <see cref="RadiusPacket.Identifier"/> of <paramref name="packet"/> must be unique
+        /// among all currently outstanding requests on this <see cref="RadiusClient"/> instance.
+        /// If a request with the same Identifier is already in flight, an
+        /// <see cref="InvalidOperationException"/> is thrown. Use <see cref="CreatePacket"/>
+        /// to generate packets with cryptographically random Identifiers, which provides
+        /// sufficient collision resistance for typical workloads.
         /// </para>
         /// </remarks>
         /// <param name="packet">
@@ -422,6 +636,11 @@ namespace Radius
         /// <exception cref="ArgumentException">
         /// Thrown when <paramref name="packet"/> has <see cref="RadiusPacket.Valid"/> set to
         /// <see langword="false"/>, or when <paramref name="maxAttempts"/> is less than 1.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when a request with the same <see cref="RadiusPacket.Identifier"/> is
+        /// already in flight on this instance. RADIUS Identifiers must be unique among
+        /// outstanding requests (RFC 2865 §3).
         /// </exception>
         /// <exception cref="ObjectDisposedException">
         /// Thrown when this instance has been disposed.
@@ -455,82 +674,84 @@ namespace Radius
             // Determine the target endpoint for this packet type.
             bool isAccounting = packet.PacketType == RadiusCode.ACCOUNTING_REQUEST;
 
-            // Pre-allocate a receive buffer on the stack-friendly side (max RADIUS = 4096).
-            // Re-used across retry attempts to avoid per-attempt allocation.
-            byte[] receiveBuffer = GC.AllocateUninitializedArray<byte>(MAX_PACKET_SIZE);
+            // Ensure the background receive loop is running before sending.
+            EnsureReceiveLoopStarted();
 
-            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            // Register a single TaskCompletionSource for this Identifier. The same TCS
+            // is reused across all retry attempts — this eliminates the race condition
+            // where a response arrives between a timeout firing and a replacement TCS
+            // being registered (the classic retry-demux race). The receive loop can
+            // complete the TCS at any point, regardless of which send attempt triggered
+            // the server's response.
+            //
+            // Only one in-flight request per Identifier is supported (RADIUS Identifier
+            // is 8 bits, so at most 256 concurrent requests per RFC 2865 §3).
+            TaskCompletionSource<RadiusPacket> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            if (!_pendingRequests.TryAdd(expectedIdentifier, tcs))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Create a per-attempt timeout CTS linked to the caller's token.
-                // This ensures the receive never hangs indefinitely on any platform
-                // (Linux does not honour SocketOptionName.ReceiveTimeout on async I/O).
-                int timeoutMs = _timeout;
-                using CancellationTokenSource attemptCts =
-                    CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                attemptCts.CancelAfter(timeoutMs);
-
-                try
-                {
-                    // Send the packet. For accounting, use SendTo with the accounting
-                    // endpoint; for all other types, the socket is pre-connected to the
-                    // auth endpoint so Send (without endpoint) is used.
-                    if (isAccounting)
-                    {
-                        await _socket.SendToAsync(rawData, SocketFlags.None, _acctEndPoint, attemptCts.Token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await _socket.SendAsync(rawData, SocketFlags.None, attemptCts.Token).ConfigureAwait(false);
-                    }
-
-                    // Receive loop: read datagrams until we get one with a matching
-                    // Identifier or the attempt times out. Unmatched datagrams (from
-                    // previous timed-out requests or concurrent sends) are discarded.
-                    while (true)
-                    {
-                        SocketReceiveFromResult result = await _socket.ReceiveFromAsync(
-                            receiveBuffer,
-                            SocketFlags.None,
-                            _authEndPoint, // used as placeholder for source address
-                            attemptCts.Token).ConfigureAwait(false);
-
-                        // Validate source endpoint — only accept datagrams from the server.
-                        if (result.RemoteEndPoint is IPEndPoint source &&
-                            source.Address.Equals(_remoteAddress) &&
-                            (source.Port == _authEndPoint.Port || source.Port == _acctEndPoint.Port))
-                        {
-                            // Quick Identifier check on the raw buffer before constructing
-                            // a RadiusPacket — avoids parsing overhead for mismatched responses.
-                            if (result.ReceivedBytes >= 20 &&
-                                receiveBuffer[IDENTIFIER_OFFSET] == expectedIdentifier)
-                            {
-                                // Copy exactly the received bytes into a right-sized array
-                                // for RadiusPacket construction.
-                                RadiusPacket receivedPacket = new(
-                                    receiveBuffer.AsSpan(0, result.ReceivedBytes).ToArray());
-
-                                if (receivedPacket.Valid)
-                                    return receivedPacket;
-                            }
-                        }
-
-                        // Unmatched datagram — continue reading until timeout.
-                    }
-                }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                {
-                    // The per-attempt CTS fired (timeout), not the caller's token.
-                    // Treat as transient and retry if attempts remain.
-                }
-                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
-                {
-                    // Platform-specific timeout — treat as transient.
-                }
+                // Another request with the same Identifier is already in flight.
+                // This is a caller error — RADIUS Identifiers must be unique among
+                // outstanding requests (RFC 2865 §3).
+                throw new InvalidOperationException(
+                    $"A request with Identifier {expectedIdentifier} is already in flight. " +
+                    "RADIUS Identifiers must be unique among outstanding requests.");
             }
 
-            return null;
+            try
+            {
+                for (int attempt = 0; attempt < maxAttempts; attempt++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Create a per-attempt timeout CTS linked to the caller's token.
+                    int timeoutMs = _timeout;
+                    using CancellationTokenSource attemptCts =
+                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    attemptCts.CancelAfter(timeoutMs);
+
+                    try
+                    {
+                        // Send the packet. For accounting, use SendTo with the accounting
+                        // endpoint; for all other types, the socket is pre-connected to the
+                        // auth endpoint so Send (without endpoint) is used.
+                        if (isAccounting)
+                        {
+                            await _socket.SendToAsync(rawData, SocketFlags.None, _acctEndPoint, attemptCts.Token).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await _socket.SendAsync(rawData, SocketFlags.None, attemptCts.Token).ConfigureAwait(false);
+                        }
+
+                        // Wait for the receive loop to complete our TCS, or for the
+                        // per-attempt timeout to fire. The same TCS is awaited across
+                        // retries — if the server responds late (after a timeout but
+                        // before the next send), the response is still captured.
+                        RadiusPacket result = await tcs.Task.WaitAsync(attemptCts.Token).ConfigureAwait(false);
+                        return result;
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // The per-attempt CTS fired (timeout), not the caller's token.
+                        // Treat as transient and retry if attempts remain. The same TCS
+                        // remains registered in _pendingRequests — no replacement needed.
+                    }
+                    catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
+                    {
+                        // Platform-specific timeout — treat as transient.
+                    }
+                }
+
+                return null;
+            }
+            finally
+            {
+                // Safety-net cleanup: remove the pending entry if the receive loop
+                // hasn't already done so (e.g. all attempts timed out, or the caller's
+                // token was cancelled). TryRemove is idempotent.
+                _pendingRequests.TryRemove(expectedIdentifier, out _);
+            }
         }
 
         /// <summary>
@@ -576,6 +797,9 @@ namespace Radius
         /// </exception>
         public Task<RadiusPacket?> PingAsync(CancellationToken cancellationToken = default)
         {
+            // Fail fast before constructing a packet if the client is already disposed.
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
             // Per RFC 5997 §6: the Status-Server packet requires a Message-Authenticator
             // attribute. SetMessageAuthenticator must be called BEFORE SetAuthenticator
             // so that the authenticator hash is computed over the final packet content,
@@ -612,10 +836,10 @@ namespace Radius
         ///   </item>
         /// </list>
         /// <para>
-        /// Both the authenticator and Identifier comparisons are performed within
-        /// <see cref="RadiusUtils.VerifyResponseAuthenticator"/>, which uses
-        /// <see cref="CryptographicOperations.FixedTimeEquals"/> to prevent timing
-        /// side-channel attacks.
+        /// The Identifier comparison is performed as a fast byte equality check. The
+        /// authenticator comparison is performed by <see cref="RadiusUtils.VerifyResponseAuthenticator"/>,
+        /// which uses <see cref="CryptographicOperations.FixedTimeEquals"/> to prevent
+        /// timing side-channel attacks.
         /// </para>
         /// </remarks>
         /// <param name="requestedPacket">
@@ -660,14 +884,14 @@ namespace Radius
             if (requestedPacket.Identifier != receivedPacket.Identifier)
                 return false;
 
-            // Delegate to RadiusUtils which reads the authenticator directly from the
-            // raw packet bytes at offset 4, avoiding the defensive-copy allocation
-            // from the RadiusPacket.Authenticator property.
+            // Read the 16-byte Request Authenticator directly from the request packet's
+            // RawData at offset 4, avoiding the defensive-copy heap allocation that the
+            // RadiusPacket.Authenticator property performs on every access.
             // VerifyResponseAuthenticator uses CryptographicOperations.FixedTimeEquals
             // internally for constant-time comparison.
             return RadiusUtils.VerifyResponseAuthenticator(
                 receivedPacket.RawData,
-                requestedPacket.Authenticator,
+                requestedPacket.RawData.AsSpan(4, 16).ToArray(),
                 _secret);
         }
 
@@ -722,6 +946,36 @@ namespace Radius
 
             if (disposing)
             {
+                // Cancel the background receive loop before disposing the socket,
+                // so it exits cleanly via OperationCanceledException rather than
+                // ObjectDisposedException.
+                _receiveCts.Cancel();
+
+                // Wait for the receive loop to terminate, ensuring the ReceiveFromAsync
+                // call has completed before the socket is disposed. This prevents a race
+                // where the socket is disposed while ReceiveFromAsync is still in-flight
+                // on the thread pool, producing a noisy ObjectDisposedException.
+                // Use Task.Wait with a bounded timeout to prevent hanging during disposal
+                // if the receive loop is stuck — 5 seconds is generous for a UDP cancel.
+                try
+                {
+                    _receiveLoopTask?.Wait(TimeSpan.FromSeconds(5));
+                }
+                catch (AggregateException)
+                {
+                    // Swallow any exception from the receive loop — it's already shutting
+                    // down and we only care about join semantics, not the result.
+                }
+
+                _receiveCts.Dispose();
+
+                // Cancel all pending requests so callers don't hang forever.
+                foreach (var kvp in _pendingRequests)
+                {
+                    kvp.Value.TrySetCanceled();
+                }
+                _pendingRequests.Clear();
+
                 // Managed cleanup: zero the shared secret to reduce exposure
                 // window of sensitive material in managed memory.
                 CryptographicOperations.ZeroMemory(_secret);

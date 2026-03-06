@@ -1,4 +1,7 @@
-﻿namespace Radius.Attributes;
+﻿using Radius;
+using static System.Runtime.InteropServices.JavaScript.JSType;
+
+namespace Radius.Attributes;
 
 /// <summary>
 /// Represents a RADIUS Tunnel-Medium-Type attribute (Type 65), as defined in RFC 2868 §3.2.
@@ -32,6 +35,12 @@ public sealed class TunnelMediumTypeAttributes : RadiusAttributes
     /// <summary>Byte offset of the 3-byte Value field within <see cref="RadiusAttributes.RawData"/>.</summary>
     private const int TUNNEL_VALUE_INDEX = 3;
 
+    /// <summary>
+    /// Maximum valid Tag value per RFC 2868 §3.1. Valid tags are <c>0x01</c>–<c>0x1F</c>;
+    /// <c>0x00</c> indicates the Tag field is unused.
+    /// </summary>
+    private const byte MAX_TAG_VALUE = 0x1F;
+
     #endregion
 
     #region Properties
@@ -59,18 +68,29 @@ public sealed class TunnelMediumTypeAttributes : RadiusAttributes
     /// </summary>
     /// <param name="tag">
     /// The Tag byte used to group related tunnel attributes (RFC 2868 §3.1).
-    /// Use <c>0x00</c> when attribute tagging is not required.
+    /// Valid values are <c>0x00</c> (unused) or <c>0x01</c>–<c>0x1F</c>.
     /// </param>
     /// <param name="tunnelMediumType">
     /// The transport medium to encode. Must be a defined member of <see cref="TUNNEL_MEDIUM_TYPE"/>.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="tunnelMediumType"/> is not a defined member of
+    /// Thrown when <paramref name="tag"/> exceeds <c>0x1F</c>, or when
+    /// <paramref name="tunnelMediumType"/> is not a defined member of
     /// <see cref="TUNNEL_MEDIUM_TYPE"/>.
     /// </exception>
     public TunnelMediumTypeAttributes(byte tag, TUNNEL_MEDIUM_TYPE tunnelMediumType)
         : base(RadiusAttributeType.TUNNEL_MEDIUM_TYPE)
     {
+        // RFC 2868 §3.1: the Tag field is a single octet in the range 0x00–0x1F.
+        // 0x00 means the Tag is unused; 0x01–0x1F are valid tag values.
+        // Values 0x20–0xFF are not defined by the RFC and would produce
+        // non-compliant wire data.
+        if (tag > MAX_TAG_VALUE)
+            throw new ArgumentOutOfRangeException(
+                nameof(tag),
+                tag,
+                $"Tag must be 0x00 (unused) or in the range [0x01, 0x{MAX_TAG_VALUE:X2}] per RFC 2868 §3.1.");
+
         if (!Enum.IsDefined(tunnelMediumType))
             throw new ArgumentOutOfRangeException(
                 nameof(tunnelMediumType),
@@ -104,8 +124,12 @@ public sealed class TunnelMediumTypeAttributes : RadiusAttributes
         RawData[TUNNEL_VALUE_INDEX + 1] = (byte)(mediumValue >> 8);
         RawData[TUNNEL_VALUE_INDEX + 2] = (byte)mediumValue;
 
-        // Data is a slice view of RawData's value region (bytes 3–5) — zero extra allocation.
-        // This replaces the separate byte[3] that RadiusUtils.IntTo3Byte() previously returned.
+        // Data contains only the 3-byte encoded value (bytes 3–5), deliberately
+        // excluding the Tag byte at offset 2. This differs from the base class
+        // convention where Data spans the entire value region after the 2-byte
+        // header. The Tag is part of RawData but not part of Data, so the
+        // base class Value property reads the tunnel code directly from Data
+        // without needing to skip a Tag offset.
         Data = RawData[TUNNEL_VALUE_INDEX..];
     }
 

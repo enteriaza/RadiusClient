@@ -1,4 +1,5 @@
-﻿using System.Buffers.Binary;
+﻿using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -102,17 +103,17 @@ namespace Radius
             // Work on a pooled copy to avoid mutating the caller's buffer.
             // This eliminates the silent data-destruction contract that requires
             // callers to remember to clone before calling.
-            byte[] working = System.Buffers.ArrayPool<byte>.Shared.Rent(data.Length);
+            byte[] working = ArrayPool<byte>.Shared.Rent(data.Length);
             try
             {
                 data.AsSpan().CopyTo(working);
                 working.AsSpan(AuthenticatorOffset, AuthenticatorLength).Clear();
-                return HashPacketWithSecret(working, data.Length, sharedSecret);
+                return HashPacketWithSecret(working.AsSpan(0, data.Length), sharedSecret);
             }
             finally
             {
                 CryptographicOperations.ZeroMemory(working.AsSpan(0, data.Length));
-                System.Buffers.ArrayPool<byte>.Shared.Return(working);
+                ArrayPool<byte>.Shared.Return(working);
             }
         }
 
@@ -154,7 +155,7 @@ namespace Radius
 
             int totalLength = AuthenticatorLength + sharedSecret.Length;
 
-            byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(totalLength);
             try
             {
                 Span<byte> bufferSpan = buffer.AsSpan(0, totalLength);
@@ -171,7 +172,7 @@ namespace Radius
             finally
             {
                 CryptographicOperations.ZeroMemory(buffer.AsSpan(0, totalLength));
-                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
@@ -225,17 +226,17 @@ namespace Radius
             if (sharedSecret.Length == 0)
                 throw new ArgumentException("Shared secret must not be empty.", nameof(sharedSecret));
 
-            byte[] working = System.Buffers.ArrayPool<byte>.Shared.Rent(data.Length);
+            byte[] working = ArrayPool<byte>.Shared.Rent(data.Length);
             try
             {
                 data.AsSpan().CopyTo(working);
                 requestAuthenticator.AsSpan().CopyTo(working.AsSpan(AuthenticatorOffset, AuthenticatorLength));
-                return HashPacketWithSecret(working, data.Length, sharedSecret);
+                return HashPacketWithSecret(working.AsSpan(0, data.Length), sharedSecret);
             }
             finally
             {
                 CryptographicOperations.ZeroMemory(working.AsSpan(0, data.Length));
-                System.Buffers.ArrayPool<byte>.Shared.Return(working);
+                ArrayPool<byte>.Shared.Return(working);
             }
         }
 
@@ -250,7 +251,10 @@ namespace Radius
         /// appended (with the value region zero-filled) and the Length field updated.
         /// </para>
         /// <para>
-        /// All sensitive intermediate buffers (HMAC key material) are zeroed after use.
+        /// The shared secret is copied into a dedicated key buffer that is zeroed after use.
+        /// This is intentional: <see cref="HMACMD5"/> internally copies the key into its own
+        /// managed state and does not zero that copy on disposal. By providing and zeroing an
+        /// explicit copy, we ensure at least one key replica is deterministically scrubbed.
         /// </para>
         /// </remarks>
         /// <param name="packetBytes">
@@ -473,8 +477,8 @@ namespace Radius
             // Use the declared packet length (octets 3–4) rather than the buffer length
             // to avoid scanning past the RADIUS packet boundary when the UDP buffer is
             // larger than the declared length (e.g., recvfrom padding or oversized buffers).
-            ushort declaredLength = (ushort)(packetBytes[PacketLengthOffset] << 8
-                                           | packetBytes[PacketLengthOffset + 1]);
+            ushort declaredLength = BinaryPrimitives.ReadUInt16BigEndian(
+                packetBytes.AsSpan(PacketLengthOffset));
             if (declaredLength < MinimumPacketLength || declaredLength > packetBytes.Length)
                 return false;
 
@@ -504,7 +508,7 @@ namespace Radius
 
             // Rent working copy from ArrayPool instead of
             // Clone() which creates an unzeroed heap allocation that cannot be cleaned up.
-            byte[] working = System.Buffers.ArrayPool<byte>.Shared.Rent(declaredLength);
+            byte[] working = ArrayPool<byte>.Shared.Rent(declaredLength);
 
             try
             {
@@ -518,6 +522,8 @@ namespace Radius
                 Span<byte> computed = stackalloc byte[AuthenticatorLength];
 
                 // Copy the secret into an exact-sized key buffer for HMAC.
+                // HMACMD5 internally copies the key and does not zero its copy on Dispose(),
+                // so we provide and zero an explicit copy for deterministic scrubbing.
                 byte[] hmacKey = new byte[sharedSecret.Length];
                 sharedSecret.AsSpan().CopyTo(hmacKey);
                 try
@@ -536,7 +542,7 @@ namespace Radius
             {
                 // Zero the working copy — it contains the full packet including sensitive attributes.
                 CryptographicOperations.ZeroMemory(working.AsSpan(0, declaredLength));
-                System.Buffers.ArrayPool<byte>.Shared.Return(working);
+                ArrayPool<byte>.Shared.Return(working);
             }
         }
 
@@ -609,7 +615,7 @@ namespace Radius
             userPassBytes.AsSpan().CopyTo(encryptedPass);
 
             int hashInputLength = sharedSecret.Length + AuthenticatorLength;
-            byte[] hashInput = System.Buffers.ArrayPool<byte>.Shared.Rent(hashInputLength);
+            byte[] hashInput = ArrayPool<byte>.Shared.Rent(hashInputLength);
 
             // Track success so we can zero encryptedPass on failure.
             // Before XOR completes, encryptedPass contains plaintext password bytes.
@@ -646,7 +652,7 @@ namespace Radius
             finally
             {
                 CryptographicOperations.ZeroMemory(hashInput.AsSpan(0, hashInputLength));
-                System.Buffers.ArrayPool<byte>.Shared.Return(hashInput);
+                ArrayPool<byte>.Shared.Return(hashInput);
 
                 // If encoding failed mid-XOR, encryptedPass still contains plaintext bytes.
                 if (!success)
@@ -726,7 +732,7 @@ namespace Radius
             int chunkCount = encodedPassBytes.Length / AuthenticatorLength;
 
             byte[] decoded = new byte[encodedPassBytes.Length];
-            byte[] hashInput = System.Buffers.ArrayPool<byte>.Shared.Rent(hashInputLength);
+            byte[] hashInput = ArrayPool<byte>.Shared.Rent(hashInputLength);
 
             try
             {
@@ -762,7 +768,7 @@ namespace Radius
             finally
             {
                 CryptographicOperations.ZeroMemory(hashInput.AsSpan(0, hashInputLength));
-                System.Buffers.ArrayPool<byte>.Shared.Return(hashInput);
+                ArrayPool<byte>.Shared.Return(hashInput);
             }
 
             // Strip trailing zero-padding added during encoding (RFC 2865 §5.2).
@@ -823,7 +829,7 @@ namespace Radius
 
             // Hash input: ChapId(1) + Password(n) + Challenge(m) — RFC 1994 §3.
             int totalLength = 1 + passwordBytes.Length + chapChallenge.Length;
-            byte[] hashInput = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
+            byte[] hashInput = ArrayPool<byte>.Shared.Rent(totalLength);
 
             try
             {
@@ -843,7 +849,7 @@ namespace Radius
             finally
             {
                 CryptographicOperations.ZeroMemory(hashInput.AsSpan(0, totalLength));
-                System.Buffers.ArrayPool<byte>.Shared.Return(hashInput);
+                ArrayPool<byte>.Shared.Return(hashInput);
             }
         }
 
@@ -942,7 +948,7 @@ namespace Radius
             int firstBlockInputLen = sharedSecret.Length + AuthenticatorLength + 2;
             int chainBlockInputLen = sharedSecret.Length + AuthenticatorLength;
 
-            byte[] hashInput = System.Buffers.ArrayPool<byte>.Shared.Rent(firstBlockInputLen);
+            byte[] hashInput = ArrayPool<byte>.Shared.Rent(firstBlockInputLen);
 
             bool success = false;
             try
@@ -978,7 +984,7 @@ namespace Radius
             finally
             {
                 CryptographicOperations.ZeroMemory(hashInput.AsSpan(0, firstBlockInputLen));
-                System.Buffers.ArrayPool<byte>.Shared.Return(hashInput);
+                ArrayPool<byte>.Shared.Return(hashInput);
 
                 if (!success)
                     CryptographicOperations.ZeroMemory(result);
@@ -1042,7 +1048,7 @@ namespace Radius
             int chainBlockInputLen = sharedSecret.Length + AuthenticatorLength;
 
             byte[] plainText = new byte[cipherLength];
-            byte[] hashInput = System.Buffers.ArrayPool<byte>.Shared.Rent(firstBlockInputLen);
+            byte[] hashInput = ArrayPool<byte>.Shared.Rent(firstBlockInputLen);
 
             try
             {
@@ -1079,7 +1085,7 @@ namespace Radius
             finally
             {
                 CryptographicOperations.ZeroMemory(hashInput.AsSpan(0, firstBlockInputLen));
-                System.Buffers.ArrayPool<byte>.Shared.Return(hashInput);
+                ArrayPool<byte>.Shared.Return(hashInput);
             }
 
             // First decrypted byte is the plaintext length field (RFC 2868 §3.5)
@@ -1118,7 +1124,8 @@ namespace Radius
             if (packetBytes.Length < MinimumPacketLength || packetBytes.Length > MaximumPacketLength)
                 return false;
 
-            ushort declaredLength = (ushort)(packetBytes[PacketLengthOffset] << 8 | packetBytes[PacketLengthOffset + 1]);
+            ushort declaredLength = BinaryPrimitives.ReadUInt16BigEndian(
+                packetBytes[PacketLengthOffset..]);
             return declaredLength == packetBytes.Length;
         }
 
@@ -1141,8 +1148,8 @@ namespace Radius
                 return false;
 
             // Walk all attribute TLVs to verify none overflow the declared packet length.
-            ushort declaredLength = (ushort)(packetBytes[PacketLengthOffset] << 8
-                                           | packetBytes[PacketLengthOffset + 1]);
+            ushort declaredLength = BinaryPrimitives.ReadUInt16BigEndian(
+                packetBytes[PacketLengthOffset..]);
             int offset = AttributesOffset;
 
             while (offset < declaredLength)
@@ -1188,7 +1195,7 @@ namespace Radius
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort ExtractDeclaredLength(ReadOnlySpan<byte> packetBytes)
             => packetBytes.Length >= MinimumPacketLength
-                ? (ushort)(packetBytes[PacketLengthOffset] << 8 | packetBytes[PacketLengthOffset + 1])
+                ? BinaryPrimitives.ReadUInt16BigEndian(packetBytes[PacketLengthOffset..])
                 : throw new ArgumentException(
                     $"Packet must be at least {MinimumPacketLength} bytes.", nameof(packetBytes));
 
@@ -1223,14 +1230,14 @@ namespace Radius
         public static ReadOnlySpan<byte> FindAttributeValue(ReadOnlySpan<byte> packetBytes, RadiusAttributeType attributeType)
         {
             if (packetBytes.Length < MinimumPacketLength)
-                return ReadOnlySpan<byte>.Empty;
+                return [];
 
             // Use the declared packet length (octets 3–4) rather than the buffer length
             // to avoid scanning past the RADIUS packet boundary.
-            ushort declaredLength = (ushort)(packetBytes[PacketLengthOffset] << 8
-                                           | packetBytes[PacketLengthOffset + 1]);
+            ushort declaredLength = BinaryPrimitives.ReadUInt16BigEndian(
+                packetBytes[PacketLengthOffset..]);
             if (declaredLength < MinimumPacketLength || declaredLength > packetBytes.Length)
-                return ReadOnlySpan<byte>.Empty;
+                return [];
 
             int offset = AttributesOffset;
             byte target = (byte)attributeType;
@@ -1249,7 +1256,7 @@ namespace Radius
                 offset += length;
             }
 
-            return ReadOnlySpan<byte>.Empty;
+            return [];
         }
 
         /// <summary>
@@ -1268,8 +1275,8 @@ namespace Radius
                 yield break;
 
             // Use the declared packet length (octets 3–4) rather than the buffer length.
-            ushort declaredLength = (ushort)(packetBytes[PacketLengthOffset] << 8
-                                           | packetBytes[PacketLengthOffset + 1]);
+            ushort declaredLength = BinaryPrimitives.ReadUInt16BigEndian(
+                packetBytes.AsSpan(PacketLengthOffset));
             if (declaredLength < MinimumPacketLength || declaredLength > packetBytes.Length)
                 yield break;
 
@@ -1603,27 +1610,27 @@ namespace Radius
         /// the <paramref name="sharedSecret"/> bytes and returns the MD5 digest.
         /// </summary>
         /// <remarks>
-        /// The combined buffer is rented from <see cref="System.Buffers.ArrayPool{T}.Shared"/>
+        /// The combined buffer is rented from <see cref="ArrayPool{T}.Shared"/>
         /// to avoid a per-call heap allocation, and is zeroed and returned in the
         /// <see langword="finally"/> block regardless of outcome.
         /// </remarks>
-        private static byte[] HashPacketWithSecret(byte[] packetData, int packetLength, byte[] sharedSecret)
+        private static byte[] HashPacketWithSecret(ReadOnlySpan<byte> packetData, ReadOnlySpan<byte> sharedSecret)
         {
-            int totalLength = packetLength + sharedSecret.Length;
+            int totalLength = packetData.Length + sharedSecret.Length;
 
-            byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(totalLength);
             try
             {
                 Span<byte> bufferSpan = buffer.AsSpan(0, totalLength);
-                packetData.AsSpan(0, packetLength).CopyTo(bufferSpan);
-                sharedSecret.AsSpan().CopyTo(bufferSpan[packetLength..]);
+                packetData.CopyTo(bufferSpan);
+                sharedSecret.CopyTo(bufferSpan[packetData.Length..]);
 
                 return MD5.HashData(bufferSpan);
             }
             finally
             {
                 CryptographicOperations.ZeroMemory(buffer.AsSpan(0, totalLength));
-                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 

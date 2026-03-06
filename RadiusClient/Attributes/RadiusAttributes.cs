@@ -1,4 +1,5 @@
-﻿using System.Buffers.Binary;
+﻿using Radius;
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
@@ -49,6 +50,13 @@ namespace Radius.Attributes
         /// by 3 bytes of the tunnel type/medium code.
         /// </summary>
         private const int TUNNEL_TAG_SIZE = 1;
+
+        /// <summary>
+        /// Required value payload length for 32-bit integer and enumerated attributes
+        /// (RFC 2865 §5). Used as a guard before calling <see cref="BinaryPrimitives.ReadInt32BigEndian"/>
+        /// to prevent <see cref="ArgumentOutOfRangeException"/> on malformed packets.
+        /// </summary>
+        private const int INT32_VALUE_LENGTH = sizeof(int);
 
         #endregion
 
@@ -107,16 +115,18 @@ namespace Radius.Attributes
         ///   <item><description><b>IP address types</b> — decoded via <see cref="IPAddress"/>
         ///     (4 bytes for IPv4, 16 bytes for IPv6).</description></item>
         ///   <item><description><b>Enumerated integer types</b> — read as big-endian 32-bit
-        ///     integer and cast to the relevant enum (RFC 2865 §5).</description></item>
+        ///     integer and cast to the relevant enum (RFC 2865 §5). Falls back to hex dump
+        ///     if the value region is not exactly 4 bytes.</description></item>
         ///   <item><description><b>String types</b> — decoded as UTF-8 text
         ///     (RFC 2865 §5).</description></item>
         ///   <item><description><b>Plain integer types</b> — read as big-endian 32-bit integer
-        ///     and formatted as decimal (RFC 2865 §5).</description></item>
+        ///     and formatted as decimal (RFC 2865 §5). Falls back to hex dump if the value
+        ///     region is not exactly 4 bytes.</description></item>
         ///   <item><description><b>Tagged tunnel types</b> — the 1-byte Tag is skipped and the
         ///     remaining 3 bytes are decoded as a 24-bit big-endian tunnel code
         ///     (RFC 2868 §3.1, §3.2).</description></item>
-        ///   <item><description><b>All other types</b> — fall back to a hex dump via
-        ///     <see cref="BitConverter.ToString(byte[])"/>.</description></item>
+        ///   <item><description><b>All other types</b> — fall back to an uppercase hex string via
+        ///     <see cref="Convert.ToHexString(ReadOnlySpan{byte})"/>.</description></item>
         /// </list>
         /// <para>
         /// This property never modifies <see cref="Data"/>. Big-endian integers are read
@@ -148,57 +158,96 @@ namespace Radius.Attributes
                     case RadiusAttributeType.DNS_SERVER_IPV6_ADDRESS: // RFC 6911 §2.2
                         // IPAddress(ReadOnlySpan<byte>) avoids the array copy that
                         // IPAddress(byte[]) performs internally on .NET 8.
-                        return new IPAddress(dataSpan).ToString();
+                        // Guard: IPAddress constructor requires exactly 4 or 16 bytes;
+                        // malformed values fall through to hex dump.
+                        if (dataSpan.Length is 4 or 16)
+                            return new IPAddress(dataSpan).ToString();
+                        break;
 
                     // ── Enumerated 32-bit integer attributes (RFC 2865 §5, RFC 2866 §5) ──
+                    // Guard: all arms require exactly 4 value bytes. Malformed attributes
+                    // with truncated or oversized values fall through to the hex dump default,
+                    // preventing ArgumentOutOfRangeException from BinaryPrimitives.
 
                     case RadiusAttributeType.SERVICE_TYPE:            // RFC 2865 §5.6
-                        return ((SERVICE_TYPE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((SERVICE_TYPE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.FRAMED_PROTOCOL:        // RFC 2865 §5.7
-                        return ((FRAMED_PROTOCOL)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((FRAMED_PROTOCOL)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.FRAMED_ROUTING:         // RFC 2865 §5.10
-                        return ((FRAMED_ROUTING)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((FRAMED_ROUTING)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.FRAMED_COMPRESSION:     // RFC 2865 §5.13
-                        return ((FRAMED_COMPRESSION)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((FRAMED_COMPRESSION)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.LOGIN_SERVICE:          // RFC 2865 §5.15
-                        return ((LOGIN_SERVICE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((LOGIN_SERVICE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.TERMINATION_ACTION:     // RFC 2865 §5.29
-                        return ((TERMINATION_ACTION)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((TERMINATION_ACTION)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.ACCT_STATUS_TYPE:       // RFC 2866 §5.1
-                        return ((ACCT_STATUS_TYPE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((ACCT_STATUS_TYPE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.ACCT_AUTHENTIC:         // RFC 2866 §5.6
-                        return ((ACCT_AUTHENTIC)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((ACCT_AUTHENTIC)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.ACCT_TERMINATE_CAUSE:   // RFC 2866 §5.10
-                        return ((ACCT_TERMINATE_CAUSE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((ACCT_TERMINATE_CAUSE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.NAS_PORT_TYPE:          // RFC 2865 §5.41
-                        return ((NAS_PORT_TYPE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((NAS_PORT_TYPE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.ARAP_ZONE_ACCESS:       // RFC 2869 §5.6
-                        return ((ARAP_ZONE_ACCESS)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((ARAP_ZONE_ACCESS)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.PROMPT:                 // RFC 2869 §5.10
-                        return ((PROMPT)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((PROMPT)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.ERROR_CAUSE:            // RFC 5176 §3.6
-                        return ((ERROR_CAUSE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((ERROR_CAUSE)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.FRAMED_MANAGEMENT_PROTOCOL:       // RFC 5607 §4.1
-                        return ((FRAMED_MANAGEMENT_PROTOCOL)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((FRAMED_MANAGEMENT_PROTOCOL)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.MANAGEMENT_TRANSPORT_PROTECTION:  // RFC 5607 §4.2
-                        return ((MANAGEMENT_TRANSPORT_PROTECTION)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((MANAGEMENT_TRANSPORT_PROTECTION)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     case RadiusAttributeType.EAP_LOWER_LAYER:        // RFC 7057 §4.1
-                        return ((EAP_LOWER_LAYER)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return ((EAP_LOWER_LAYER)BinaryPrimitives.ReadInt32BigEndian(dataSpan)).ToString();
+                        break;
 
                     // ── Tagged tunnel attributes (1-byte Tag + 3-byte big-endian value, RFC 2868 §3) ──
                     // When parsed from the wire, Data = [Tag(1), Value(3)] — 4 bytes total.
@@ -207,14 +256,18 @@ namespace Radius.Attributes
                     // We handle both cases: if Data is 4 bytes, skip the Tag; if 3, read directly.
 
                     case RadiusAttributeType.TUNNEL_TYPE:             // RFC 2868 §3.1
-                        return dataSpan.Length >= TUNNEL_TAG_SIZE + 3
-                            ? ((TUNNEL_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, TUNNEL_TAG_SIZE)).ToString()
-                            : ((TUNNEL_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, 0)).ToString();
+                        if (dataSpan.Length >= TUNNEL_TAG_SIZE + 3)
+                            return ((TUNNEL_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, TUNNEL_TAG_SIZE)).ToString();
+                        if (dataSpan.Length >= 3)
+                            return ((TUNNEL_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, 0)).ToString();
+                        break;
 
                     case RadiusAttributeType.TUNNEL_MEDIUM_TYPE:     // RFC 2868 §3.2
-                        return dataSpan.Length >= TUNNEL_TAG_SIZE + 3
-                            ? ((TUNNEL_MEDIUM_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, TUNNEL_TAG_SIZE)).ToString()
-                            : ((TUNNEL_MEDIUM_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, 0)).ToString();
+                        if (dataSpan.Length >= TUNNEL_TAG_SIZE + 3)
+                            return ((TUNNEL_MEDIUM_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, TUNNEL_TAG_SIZE)).ToString();
+                        if (dataSpan.Length >= 3)
+                            return ((TUNNEL_MEDIUM_TYPE)RadiusUtils.ThreeBytesToUInt(dataSpan, 0)).ToString();
+                        break;
 
                     // ── UTF-8 string attributes (RFC 2865 §5) ──
 
@@ -269,22 +322,26 @@ namespace Radius.Attributes
                     case RadiusAttributeType.ACCT_TUNNEL_PACKETS_LOST: // RFC 2867 §4.2
                     case RadiusAttributeType.TUNNEL_PREFERENCE:      // RFC 2868 §3.8
                     case RadiusAttributeType.MANAGEMENT_PRIVILEGE_LEVEL: // RFC 5607 §4.4
-                        return BinaryPrimitives.ReadUInt32BigEndian(dataSpan).ToString(CultureInfo.InvariantCulture);
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                            return BinaryPrimitives.ReadUInt32BigEndian(dataSpan).ToString(CultureInfo.InvariantCulture);
+                        break;
 
                     // ── Date/time attribute (32-bit Unix timestamp, RFC 2869 §5.3) ──
 
                     case RadiusAttributeType.EVENT_TIMESTAMP:        // RFC 2869 §5.3
-                        uint unixTime = BinaryPrimitives.ReadUInt32BigEndian(dataSpan);
-                        return DateTimeOffset.FromUnixTimeSeconds(unixTime)
-                            .UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
-
-                    default:
-                        // Convert.ToHexString is faster than BitConverter.ToString and
-                        // produces uppercase hex without the '-' separators. Use
-                        // BitConverter.ToString only if the dash-delimited legacy format
-                        // must be preserved for callers that depend on it.
-                        return BitConverter.ToString(Data);
+                        if (dataSpan.Length == INT32_VALUE_LENGTH)
+                        {
+                            uint unixTime = BinaryPrimitives.ReadUInt32BigEndian(dataSpan);
+                            return DateTimeOffset.FromUnixTimeSeconds(unixTime)
+                                .UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+                        }
+                        break;
                 }
+
+                // Fallback for unrecognised types or malformed values that failed the
+                // length guard above. Convert.ToHexString produces uppercase hex without
+                // separators and is faster than BitConverter.ToString.
+                return Convert.ToHexString(dataSpan);
             }
         }
 
@@ -366,7 +423,7 @@ namespace Radius.Attributes
 
             // Allocate exactly the final TLV size — header (2) + int payload (4) = 6 bytes.
             // Writing directly into RawData avoids the intermediate valueBytes array.
-            Length = (byte)(sizeof(int) + ATTRIBUTE_HEADER_SIZE);
+            Length = sizeof(int) + ATTRIBUTE_HEADER_SIZE;
             RawData = new byte[Length];
             RawData[0] = (byte)Type;
             RawData[1] = Length;
@@ -406,7 +463,7 @@ namespace Radius.Attributes
 
             // Allocate exactly the final TLV size — header (2) + uint payload (4) = 6 bytes.
             // Writing directly into RawData avoids the intermediate valueBytes array.
-            Length = (byte)(sizeof(uint) + ATTRIBUTE_HEADER_SIZE);
+            Length = sizeof(uint) + ATTRIBUTE_HEADER_SIZE;
             RawData = new byte[Length];
             RawData[0] = (byte)Type;
             RawData[1] = Length;
@@ -523,7 +580,7 @@ namespace Radius.Attributes
 
             // Allocate exactly the final TLV size — header (2) + long payload (8) = 10 bytes.
             // Writing directly into RawData avoids the intermediate valueBytes array.
-            Length = (byte)(sizeof(long) + ATTRIBUTE_HEADER_SIZE);
+            Length = sizeof(long) + ATTRIBUTE_HEADER_SIZE;
             RawData = new byte[Length];
             RawData[0] = (byte)Type;
             RawData[1] = Length;
@@ -583,7 +640,7 @@ namespace Radius.Attributes
             // Mask host bits so only the network portion is encoded (RFC 8044 §3.9).
             if (prefixLength < 32)
             {
-                uint mask = prefixLength == 0 ? 0u : ~((1u << (32 - prefixLength)) - 1u);
+                uint mask = prefixLength == 0 ? 0u : ~((1u << 32 - prefixLength) - 1u);
                 uint masked = BinaryPrimitives.ReadUInt32BigEndian(addrBytes) & mask;
                 BinaryPrimitives.WriteUInt32BigEndian(addrBytes, masked);
             }
@@ -644,7 +701,7 @@ namespace Radius.Attributes
             // Zero host bits beyond the prefix length.
             for (int i = prefixLength; i < 128; i++)
             {
-                addrBytes[i / 8] &= (byte)~(1 << (7 - i % 8));
+                addrBytes[i / 8] &= (byte)~(1 << 7 - i % 8);
             }
 
             // Only encode the bytes needed to carry the prefix (RFC 3162 §2.3).
